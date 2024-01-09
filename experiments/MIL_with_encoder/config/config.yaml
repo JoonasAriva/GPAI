@@ -1,0 +1,27 @@
+hydra:
+  run:
+    dir: results/${hydra.job.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+project: MIL_TUH_EXP
+
+training:
+  epochs: 75
+  learning_rate: 1e-4
+  weight_decay: 5e-4
+  seed: 1
+
+
+model:
+  classes: 2
+  name: resnet18
+  pretrained_imagenet: True
+  neighbour_range: 0
+  num_heads: 1
+
+data:
+  take_every_nth_slice: 3
+  data_augmentations: False
+  plane: axial
+  datasets: ['TUH_kidney']
+  crop_size: 120
+check: False
