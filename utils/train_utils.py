@@ -12,6 +12,7 @@ def attention_accuracy(attention, df):
     df.loc[df["tumor"] > 0, "important_tumor"] = 1
     df["important_tumor"] = df["important_tumor"].fillna(0)
 
+    #print("attention min, max and nan values: ",np.min(attention),np.max(attention),np.isnan(attention).any())
     treshold = threshold_otsu(attention)
     # otsu threshold
     # binarize attention

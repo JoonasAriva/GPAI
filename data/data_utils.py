@@ -62,8 +62,14 @@ def get_dataset_paths(datasets: List[str], dataset_type: str, percentage: float 
 
         TUH_study_length = len(control) + len(tumor)
         if return_predictions:
-            all_labels.extend(glob.glob(TUH_data_path + 'cases_labels/*.nii.gz'))
-            all_labels.extend(glob.glob(TUH_data_path + 'controls_labels/*.nii.gz'))
+            if dataset_type == "train":
+                all_labels.extend(glob.glob(data_path + '/labels/cases/*.nii.gz'))
+                all_labels.extend(glob.glob(data_path + '/labels/cases_from_test/*.nii.gz'))
+                all_labels.extend(glob.glob(data_path + '/labels/controls/*.nii.gz'))
+                all_labels.extend(glob.glob(data_path + '/labels/controls_from_test/*.nii.gz'))
+            else:
+                all_labels.extend(glob.glob(data_path + '/case_labels/*.nii.gz'))
+                all_labels.extend(glob.glob(data_path + '/control_labels/*.nii.gz'))
 
     if "totalsegmentor" in datasets:
         data_path = os.path.join(total_segmentor_data_path + 'model_ready_dataset', dataset_type)
@@ -108,6 +114,7 @@ def get_dataset_paths(datasets: List[str], dataset_type: str, percentage: float 
         all_tumors = all_tumors[:int(len(all_tumors) * percentage)]
 
     if return_predictions:
+        print("segmentation paths length: ", len(all_labels))
         return all_controls, all_tumors, TUH_study_length, all_labels
     else:
         return all_controls, all_tumors, TUH_study_length
