@@ -91,8 +91,9 @@ class ScoreCAM_for_attention(BaseCAM):
 
     """
 
-    def __init__(self, model_dict):
+    def __init__(self, model_dict, wrt_classifier_score=False):
         super().__init__(model_dict)
+        self.classifier_score = wrt_classifier_score
 
     def forward(self, input, retain_graph=False):
         # print("cam forward")
@@ -100,14 +101,15 @@ class ScoreCAM_for_attention(BaseCAM):
         all_slices_saliency_map = torch.zeros((b, h, w))
 
         self.model_arch.zero_grad()
-        Y_prob, Y_hat, unnorm_attention = self.model_arch(input, return_unnorm_attention=True)
+        Y_prob, Y_hat, unnorm_attention, cls_scores = self.model_arch(input, return_unnorm_attention=True,
+                                                                      full_pass = True)
 
         # top_att = whole_attention.argsort()[0][-n_biggest:]  # [::-1]
         if torch.isnan(unnorm_attention).any():
             print("unorm attention contains nans")
 
-        top_att = unnorm_attention.cpu().flatten().argsort() # < 0.1
-        important_slice_indices = top_att[-6:] # we visualize 6 biggest
+        top_att = unnorm_attention.cpu().flatten().argsort()  # < 0.1
+        important_slice_indices = top_att[-6:]  # we visualize 6 biggest
         print("important slices:", important_slice_indices.shape)
 
         print_activation_shape = True
@@ -148,7 +150,8 @@ class ScoreCAM_for_attention(BaseCAM):
 
                 filtered_input = input[important_slice_indices][good_activations] * norm_saliency_map
 
-                _, _, new_attention = self.model_arch(filtered_input, return_unnorm_attention=True)
+                _, _, new_attention = self.model_arch(filtered_input, return_unnorm_attention=True,
+                                                      scorecam_wrt_classifier_score=self.classifier_score)
 
                 # output = F.softmax(output)
                 new_attention = torch.squeeze(new_attention).view(-1, 1, 1)
@@ -173,9 +176,14 @@ class ScoreCAM_for_attention(BaseCAM):
         score_saliency_map[good_activations] = (score_saliency_map[good_activations] - min_per_channel[
             good_activations]) / (max_per_channel[good_activations] - min_per_channel[good_activations])
         print("nan after final normalization?: ", torch.isnan(score_saliency_map).any())
+        print("nr of good activations: ", len(good_activations))
         # all_slices_saliency_map[idx, :, :] = score_saliency_map
 
-        return score_saliency_map, Y_hat, unnorm_attention
+        _, _, individual_predictions = self.model_arch(input[important_slice_indices],
+                                                       scorecam_wrt_classifier_score=True)
+        print("individual predictions for top slices", individual_predictions)
+
+        return score_saliency_map, Y_hat, unnorm_attention,cls_scores
 
     def __call__(self, input, retain_graph=False):
         return self.forward(input, retain_graph)

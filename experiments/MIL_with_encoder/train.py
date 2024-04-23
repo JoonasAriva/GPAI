@@ -14,7 +14,7 @@ import torch.utils.data as data_utils
 import wandb
 from monai.transforms import *
 from omegaconf import OmegaConf, DictConfig
-
+import torchio as tio
 from losses import AttentionLoss
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
@@ -33,6 +33,8 @@ train_ROIS = pd.read_csv("/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_
 train_ROIS_extra = pd.read_csv(
     "/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_train_ROIS_from_test.csv")
 train_ROIS = pd.concat([train_ROIS, train_ROIS_extra])
+
+np.seterr(divide='ignore', invalid='ignore')
 
 
 # Example usage:
@@ -60,18 +62,28 @@ def main(cfg: DictConfig):
 
     print('Load Train and Test Set')
 
-    transforms_train = Compose(
-        [
-            RandRotate(range_x=1, prob=1),
-            RandGaussianNoise(prob=0.5, mean=0, std=0.2),
-            RandAffine(prob=0.5, scale_range=(-0.1, 0.1), translate_range=(-50, 50),
-                       padding_mode="border")
-        ])
+    # transforms_train = Compose(
+    #     [
+    #         RandRotate(range_x=1, prob=1),
+    #         RandGaussianNoise(prob=0.5, mean=0, std=0.2),
+    #         RandAffine(prob=0.5, scale_range=(-0.1, 0.1), translate_range=(-50, 50),
+    #                    padding_mode="border")
+    #     ])
+    # transforms_train2 = Compose(
+    #     [
+    #         RandRotate(range_z=1, prob=1),
+    #         RandAffine(prob=0.5, scale_range=(0, -0.2), translate_range=(-50, 50),
+    #                    padding_mode="border")
+    #     ])
+    transforms = tio.Compose(
+        [tio.RandomFlip(axes=(0, 1)), tio.RandomAffine(scales=(0.9, 1.1), degrees=(0, 0, 10), translation=(50, 50, 0))])
     dataloader_params = {'datasets': cfg.data.datasets,
                          'only_every_nth_slice': cfg.data.take_every_nth_slice, 'as_rgb': True,
                          'plane': 'axial', 'center_crop': cfg.data.crop_size, 'downsample': False,
                          'roll_slices': cfg.data.roll_slices}
-    train_dataset = CT_dataloader(dataset_type="train", augmentations=transforms_train, **dataloader_params)
+    train_dataset = CT_dataloader(dataset_type="train",
+                                  augmentations=None if not cfg.data.data_augmentations else transforms,
+                                  **dataloader_params)
     test_dataset = CT_dataloader(dataset_type="test", **dataloader_params)
 
     loader_kwargs = {'num_workers': 4, 'pin_memory': True} if torch.cuda.is_available() else {}
@@ -110,7 +122,7 @@ def main(cfg: DictConfig):
                       calculate_attention_accuracy=True)
 
     if not cfg.check:
-        experiment = wandb.init(project='MIL_encoder_24', resume='allow', anonymous='must')
+        experiment = wandb.init(project='MIL_encoder_24', resume='must',id='m6sf65ks', anonymous='must')
         experiment.config.update(
             dict(epochs=cfg.training.epochs,
                  learning_rate=cfg.training.learning_rate, model_name=cfg.model.name,

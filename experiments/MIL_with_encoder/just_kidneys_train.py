@@ -19,7 +19,7 @@ from losses import AttentionLoss
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 from trainer import Trainer
 from data.dataloaders import CT_DataloaderPatches
-from models import ResNet18Attention, ResNet18AttentionV2
+from models import ResNet18Attention, ResNet18AttentionV2, ResNetAttentionV3
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 # Training settings
@@ -32,6 +32,7 @@ train_ROIS = pd.read_csv("/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_
 train_ROIS_extra = pd.read_csv(
     "/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_train_ROIS_from_test.csv")
 train_ROIS = pd.concat([train_ROIS, train_ROIS_extra])
+
 
 @hydra.main(config_path="config", config_name="config", version_base='1.1')
 def main(cfg: DictConfig):
@@ -62,7 +63,11 @@ def main(cfg: DictConfig):
         # model.backbone.requires_grad_(False)
     elif cfg.model.name == 'resnet18V2':
         model = ResNet18AttentionV2(neighbour_range=cfg.model.neighbour_range,
-                                    num_attention_heads=cfg.model.num_heads, instnorm=True)
+                                    num_attention_heads=cfg.model.num_heads, instnorm=cfg.model.inst_norm)
+
+    elif cfg.model.name == 'resnet18V3':
+        model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
+                                  num_attention_heads=cfg.model.num_heads, instnorm=cfg.model.inst_norm, resnet_type="18")
 
         # if you need to continue training
     if "checkpoint" in cfg.keys():

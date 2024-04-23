@@ -1,10 +1,13 @@
-import numpy as np
-import torch
-import raster_geometry as rg
-import os
 import glob
+import os
 from typing import List
+
+import numpy as np
+import raster_geometry as rg
+import torch
 import torch.nn.functional as F
+
+
 def add_random_sphere(image):
     size = image.shape[1]
     height = image.shape[2]
@@ -119,11 +122,11 @@ def get_dataset_paths(datasets: List[str], dataset_type: str, percentage: float 
     else:
         return all_controls, all_tumors, TUH_study_length
 
-def set_orientation(x, path, plane):
 
+def set_orientation(x, path, plane):
     # PLANES: set it into default plane (axial)
     # if transformations are needed we start from this position
-    if not "kits23" in path:
+    if not "kits" in path:
         x = np.flip(x, axis=1)
         if len(x.shape) == 3:
             x = np.transpose(x, (1, 0, 2))
@@ -144,20 +147,36 @@ def set_orientation(x, path, plane):
 
     return x
 
-def downsample_scan(x, scale_factor=0.5):
 
+def downsample_scan(x, scale_factor=0.5):
     x = torch.from_numpy(x.copy())
     x = F.interpolate(torch.unsqueeze(torch.unsqueeze(x, 0), 0), scale_factor=scale_factor,
                       mode='trilinear', align_corners=False)
     x = np.array(torch.squeeze(x))
     return x
 
-def normalize_scan(x):
-    clipped_x = np.clip(x, np.percentile(x, q=0.05), np.percentile(x, q=99.5))
-    norm_x = (clipped_x - np.mean(clipped_x, axis=(0, 1))) / (
-            np.std(clipped_x, axis=(0, 1)) + 1)  # mean 0, std 1 norm
-    norm_x = torch.unsqueeze(torch.from_numpy(norm_x), 0)
+
+def normalize_scan(x, single_channel=False):
+    if single_channel:
+        xy_dims = (0, 1)
+    else:
+        xy_dims = (1, 2)
+    # lets find a good threshold to clip away the background
+
+    # min_value = np.min(x)
+    # print("min value of scan: ",min_value)
+    # treshold = min_value + 100
+    #
+    # lower_percent = np.sum((x < treshold)) / len(np.reshape(x,-1))
+    #
+    # clipped_x = np.clip(x, np.percentile(x, q=lower_percent * 100 + 1), np.percentile(x, q=99.5))
+    clipped_x = np.clip(x, -150, 250)  # soft tissue window
+    norm_x = (clipped_x - np.expand_dims(np.mean(clipped_x, axis=xy_dims), xy_dims)) / (
+            np.expand_dims(np.std(clipped_x, axis=xy_dims), xy_dims) + 1)  # mean 0, std 1 norm
+    norm_x = np.squeeze(norm_x)
     return norm_x
+
+
 # def custom_highlight_function(x, segmentation):
 #
 #     if self.highlight_experiment:
@@ -167,3 +186,40 @@ def normalize_scan(x):
 #         x[np.where(segmentation == 0)] *= 0.2
 #
 #     return x
+
+
+def get_kidney_datasets(type: str):
+    # type = train, test
+
+    tuh_train_data_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/tuh_train/'
+    tuh_test_data_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/tuh_test/'
+    #ts_data_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/total_segmentor'
+    other_datasets_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/data'
+
+    all_controls = []
+    all_tumors = []
+
+    # tuh
+    for data_path in [tuh_train_data_path, tuh_test_data_path]:
+        control_path = data_path + '/controls/images/'+type+'/*nii.gz'
+        tumor_path = data_path + '/cases/images/'+type+'/*nii.gz'
+
+        control = glob.glob(control_path)
+        tumor = glob.glob(tumor_path)
+
+        all_controls.extend(control)
+        all_tumors.extend(tumor)
+
+    # total segmentor
+    # control_path = ts_data_path + '/ts_controls/images/*nii.gz'
+    # tumor_path = ts_data_path + '/ts_tumors/images/*nii.gz'
+    # control = glob.glob(control_path)
+    # tumor = glob.glob(tumor_path)
+    # all_controls.extend(control)
+    # all_tumors.extend(tumor)
+
+    # # kits + kirc
+    tumor = glob.glob(other_datasets_path + '/imagesTr/'+type+'/*nii.gz')
+    all_tumors.extend(tumor)
+
+    return all_controls, all_tumors

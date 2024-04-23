@@ -140,6 +140,7 @@ class AttentionHeadV2(nn.Module):
     def forward(self, x):
         return self.head(x)
 
+
 class AttentionHeadV3(nn.Module):
     def __init__(self, L, D, K):
         super(AttentionHeadV3, self).__init__()
@@ -152,6 +153,20 @@ class AttentionHeadV3(nn.Module):
 
     def forward(self, x):
         return self.head(x)
+
+
+class AttentionHeadReLU(nn.Module):
+    def __init__(self, L, D, K):
+        super(AttentionHeadReLU, self).__init__()
+        self.head = nn.Sequential(
+            nn.Linear(L, D),
+            nn.ReLU(),
+            nn.Linear(D, K)
+        )
+
+    def forward(self, x):
+        return self.head(x)
+
 
 class ResNet18AttentionV2(nn.Module):
 
@@ -235,9 +250,10 @@ class ResNet18AttentionV2(nn.Module):
 
         return error
 
+
 class ResNetAttentionV3(nn.Module):
 
-    def __init__(self, neighbour_range=0, num_attention_heads=1, instnorm=False, resnet_type = "18"):
+    def __init__(self, neighbour_range=0, num_attention_heads=1, instnorm=False, resnet_type="18"):
         super(ResNetAttentionV3, self).__init__()
         self.neighbour_range = neighbour_range
         self.num_attention_heads = num_attention_heads
@@ -281,7 +297,7 @@ class ResNetAttentionV3(nn.Module):
         for attention_head in self.attention_heads:
             attention_head.eval()
 
-    def forward(self, x, return_unnorm_attention=False):
+    def forward(self, x, return_unnorm_attention=False, scorecam_wrt_classifier_score=False, full_pass=False):
 
         H = self.backbone(x)
         # print("h", H.shape)
@@ -303,14 +319,113 @@ class ResNetAttentionV3(nn.Module):
         # print("after mean", unnorm_A.shape)
         unnorm_A = unnorm_A.view(1, -1)
         # print("attention after view ", unnorm_A.shape)
-        #A = F.softmax(unnorm_A, dim=1)
+        # A = F.softmax(unnorm_A, dim=1)
         # print("after softmax", A.shape)
         A = unnorm_A / (torch.sum(unnorm_A) + 0.01)
 
+        if scorecam_wrt_classifier_score:
+            Y_probs = self.classifier(H)
+            return None, None, Y_probs
         M = torch.mm(A, H)
         # print("M", M.shape)
         Y_prob = self.classifier(M)
         Y_hat = self.sig(Y_prob)
+        Y_hat = torch.ge(Y_hat, 0.5).float()
+
+        if full_pass:
+            Y_probs = self.classifier(H)
+            return Y_prob, Y_hat, unnorm_A, Y_probs
+        if return_unnorm_attention:
+            return Y_prob, Y_hat, unnorm_A
+        else:
+            return Y_prob, Y_hat, unnorm_A, H, attention_maps
+
+    # AUXILIARY METHODS
+    def calculate_classification_error(self, Y, Y_hat):
+        Y = Y.float()
+        error = 1. - Y_hat.eq(Y).cpu().float().mean().data.item()
+
+        return error
+
+
+class ResNetAttentionV4(nn.Module):
+
+    def __init__(self, neighbour_range=0, num_attention_heads=1, instnorm=False, resnet_type="18"):
+        super(ResNetAttentionV4, self).__init__()
+        self.neighbour_range = neighbour_range
+        self.num_attention_heads = num_attention_heads
+        self.instnorm = instnorm
+        print("Using neighbour attention with a range of ", self.neighbour_range)
+        print("# of attention heads: ", self.num_attention_heads)
+        self.L = 512 * 1 * 1
+        self.D = 128
+        self.K = 1
+        self.resnet_type = resnet_type
+        self.adaptive_pooling = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)))
+
+        self.attention_heads = nn.ModuleList([
+            AttentionHeadReLU(self.L, self.D, self.K) for i in range(self.num_attention_heads)])
+
+        # self.attention_heads.apply(init_weights)
+
+        self.classifier = nn.Sequential(nn.Linear(512, 1))
+
+        if self.instnorm:
+            # load the resnet with instance norm instead of batch norm
+
+            if resnet_type == "18":
+                model = resnet.ResNet(resnet.BasicBlock, [2, 2, 2, 2], norm_layer=MyGroupNorm)
+                sd = resnet18(weights=ResNet18_Weights.DEFAULT).state_dict()
+            elif resnet_type == "34":
+                model = resnet.ResNet(resnet.BasicBlock, [3, 4, 6, 3], norm_layer=MyGroupNorm)
+                sd = resnet34(weights=ResNet34_Weights.DEFAULT).state_dict()
+
+            model.load_state_dict(sd, strict=False)
+        else:
+            if resnet_type == "18":
+                model = resnet18(weights=ResNet18_Weights.DEFAULT)
+            if resnet_type == "34":
+                model = resnet34(weights=ResNet34_Weights.DEFAULT)
+        modules = list(model.children())[:-2]
+        self.backbone = nn.Sequential(*modules)
+        self.layer_norm = nn.LayerNorm(512)
+
+    def disable_dropout(self):
+        for attention_head in self.attention_heads:
+            attention_head.eval()
+
+    def forward(self, x, return_unnorm_attention=False):
+
+        H = self.backbone(x)
+        # print("h", H.shape)
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+        H_norm = self.layer_norm(H)
+        # print("after pooling", H.shape)
+        if self.neighbour_range != 0:
+            combinedH = H.view(-1)
+            combinedH = F.pad(combinedH, (self.L * self.neighbour_range, self.L * self.neighbour_range), "constant",
+                              0)  # TODO: mirror padding?
+            combinedH = combinedH.unfold(0, self.L * (self.neighbour_range * 2 + 1), self.L)
+
+            H = 0.25 * combinedH[:, :self.L] + 0.5 * combinedH[:, self.L:2 * self.L] + 0.25 * combinedH[:, 2 * self.L:]
+
+        attention_maps = [head(H_norm) for head in self.attention_heads]
+        attention_maps = torch.cat(attention_maps, dim=1)
+        # print("attention", attention_maps.shape)
+        unnorm_A = torch.mean(attention_maps, dim=1)
+        # print("after mean", unnorm_A.shape)
+        unnorm_A = unnorm_A.view(1, -1)
+        # print("attention after view ", unnorm_A.shape)
+        # A = F.softmax(unnorm_A, dim=1)
+        # print("after softmax", A.shape)
+
+        A = nn.Sigmoid()(unnorm_A) / (torch.sum(nn.Sigmoid()(unnorm_A)) + 0.001)
+
+        M = torch.mm(A, H_norm)
+        # print("M", M.shape)
+        Y_prob = self.classifier(M)
+        Y_hat = nn.Sigmoid()(Y_prob)
         Y_hat = torch.ge(Y_hat, 0.5).float()
 
         if return_unnorm_attention:
@@ -325,6 +440,7 @@ class ResNetAttentionV3(nn.Module):
         error = 1. - Y_hat.eq(Y).cpu().float().mean().data.item()
 
         return error
+
 
 class Attention(nn.Module):
     def __init__(self):
