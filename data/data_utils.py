@@ -1,12 +1,23 @@
-import glob
+
 import os
 from typing import List
 
-import numpy as np
-import raster_geometry as rg
-import torch
-import torch.nn.functional as F
 
+import raster_geometry as rg
+
+import torch.nn.functional as F
+from scipy import ndimage as ndi
+from skimage import morphology
+from visualize_utils import get_animation
+
+import numpy as np
+import matplotlib
+import glob
+from IPython.display import display, HTML
+import matplotlib.pyplot as plt
+
+import torch
+matplotlib.rcParams['animation.embed_limit'] = 2 ** 128
 
 def add_random_sphere(image):
     size = image.shape[1]
@@ -193,7 +204,7 @@ def get_kidney_datasets(type: str):
 
     tuh_train_data_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/tuh_train/'
     tuh_test_data_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/tuh_test/'
-    #ts_data_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/total_segmentor'
+    # ts_data_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/total_segmentor'
     other_datasets_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/data'
 
     all_controls = []
@@ -201,8 +212,8 @@ def get_kidney_datasets(type: str):
 
     # tuh
     for data_path in [tuh_train_data_path, tuh_test_data_path]:
-        control_path = data_path + '/controls/images/'+type+'/*nii.gz'
-        tumor_path = data_path + '/cases/images/'+type+'/*nii.gz'
+        control_path = data_path + '/controls/images/' + type + '/*nii.gz'
+        tumor_path = data_path + '/cases/images/' + type + '/*nii.gz'
 
         control = glob.glob(control_path)
         tumor = glob.glob(tumor_path)
@@ -219,7 +230,35 @@ def get_kidney_datasets(type: str):
     # all_tumors.extend(tumor)
 
     # # kits + kirc
-    tumor = glob.glob(other_datasets_path + '/imagesTr/'+type+'/*nii.gz')
+    tumor = glob.glob(other_datasets_path + '/imagesTr/' + type + '/*nii.gz')
     all_tumors.extend(tumor)
 
     return all_controls, all_tumors
+
+import time
+def remove_table_3d(img):
+    start = time.time()
+    thresh = -200  # in HU units, it should filter out air :)
+    binary = img > thresh
+
+    # for working with 3d components, add binary:true layer to both end to close off any cavities
+    true_layer = torch.unsqueeze(torch.ones_like(img[:, :, 0], dtype=torch.bool), dim=2)
+    binary = torch.concat((true_layer, binary, true_layer), dim=2)
+
+    # Fill the largest region completely (the body of the patient)
+    filled_region = ndi.binary_fill_holes(binary)
+
+
+    keep_mask = filled_region[:, :, 1:-1]
+
+    # remoev small objects not connected to the main body. 40000 pixels per slice seems to do the work for 512x512 resolution
+    min_size = 40000 * img.shape[2]
+    keep_mask = morphology.remove_small_objects(keep_mask, min_size=min_size)
+    keep_mask = np.expand_dims(keep_mask, 0)
+
+    maskedimg = img.detach().clone()
+    # specific fill value does not matter that much if you apply ct windowing afterwards
+    maskedimg[~keep_mask] = thresh
+    end = time.time()
+    #print("time: ",end-start)
+    return maskedimg

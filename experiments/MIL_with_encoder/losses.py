@@ -34,3 +34,16 @@ class AttentionLoss(nn.Module):
         inc_loss = self.include_loss(attention, label)
         exc_loss = self.exclude_loss(attention)
         return self.gamma * (inc_loss + exc_loss), (inc_loss, exc_loss)
+
+
+class AttentionLossV2(nn.Module):
+
+    def __init__(self, gamma=0.2):
+        super(AttentionLossV2, self).__init__()
+        self.gamma = gamma
+
+    def forward(self, attention):
+
+        a = torch.mean(attention**2)
+        b = (1 - torch.max(attention))**2
+        return self.gamma * (a+b), (a,b)

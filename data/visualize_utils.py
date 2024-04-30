@@ -11,7 +11,7 @@ norm = BoundaryNorm(boundaries, discrete_cmap.N)
 
 
 # single CT scan visulistation (scan is reduced in size)
-def get_animation(volume, use_zoom=True):
+def get_animation(volume, use_zoom=True, title=None):
     if use_zoom:
         volume = zoom(volume, (0.3, 0.3, 0.3))
     fig = plt.figure()
@@ -22,6 +22,8 @@ def get_animation(volume, use_zoom=True):
                         animated=True, cmap=plt.cm.bone)
 
         plt.axis("off")
+        if title:
+            plt.title(title)
         ims.append([im])
 
     ani = animation.ArtistAnimation(fig, ims, interval=100, blit=False,

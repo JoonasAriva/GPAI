@@ -7,11 +7,11 @@ import torchio as tio
 from monai.transforms import *
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
-from data_utils import get_kidney_datasets, set_orientation, downsample_scan, normalize_scan
+from data_utils import get_kidney_datasets, set_orientation, downsample_scan, normalize_scan, remove_table_3d
 
 
 class KidneyDataloader(torch.utils.data.Dataset):
-    def __init__(self, only_every_nth_slice: int = 1, type: str = "train",downsample: bool = False,
+    def __init__(self, only_every_nth_slice: int = 1, type: str = "train", downsample: bool = False,
                  augmentations: callable = None, as_rgb: bool = False,
                  sample_shifting: bool = False, plane: str = 'axial',
                  center_crop: int = 120, roll_slices=True):
@@ -64,25 +64,27 @@ class KidneyDataloader(torch.utils.data.Dataset):
 
         x = x[:, :, ::self.nth_slice]  # sample slices
         x = np.expand_dims(x, 0)  # needed for cropper
-
         x = self.center_cropper(x).as_tensor()
-        w, h, d = np.squeeze(x).shape
+        x = np.squeeze(x)
+        w, h, d = x.shape
 
         y = torch.Tensor(self.labels[index])
+
+        x = np.clip(x, -1024,None)
+        x = remove_table_3d(x)
 
         if self.as_rgb:  # if we need 3 channel input
             if self.roll_slices:
 
-                roll_forward = np.roll(x, 1, axis=(3))
+                roll_forward = np.roll(x, 1, axis=(2))
                 # mirror the first slice
-                roll_forward[:, :, :, 0] = roll_forward[:, :, :, 1]
-                roll_back = np.roll(x, -1, axis=(3))
+                roll_forward[:, :, 0] = roll_forward[:, :, 1]
+                roll_back = np.roll(x, -1, axis=(2))
                 # mirror the first slice
-                roll_back[:, :, :, -1] = roll_back[:, :, :, -2]
+                roll_back[:, :, -1] = roll_back[:, :, -2]
                 x = np.stack((roll_back, x, roll_forward), axis=0)
             else:
                 x = np.concatenate((x, x, x), axis=0)
-            x = np.squeeze(x)
 
         if self.augmentations is not None:
 

@@ -15,10 +15,11 @@ import torchio as tio
 import wandb
 from omegaconf import OmegaConf, DictConfig
 
-from losses import AttentionLoss
+from losses import AttentionLossV2
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
-from models import ResNet18AttentionV2, ResNetAttentionV3
+# from models import ResNet18AttentionV2, ResNetAttentionV3
+from current_model import ResNetAttentionV3
 from trainer import Trainer
 from data.kidney_dataloader import KidneyDataloader
 
@@ -47,6 +48,7 @@ np.seterr(divide='ignore', invalid='ignore')
 #
 # print(f"Combined Loss: {loss_value.item()}")
 
+os.environ["WANDB__SERVICE_WAIT"] = "300"
 
 @hydra.main(config_path="config", config_name="config", version_base='1.1')
 def main(cfg: DictConfig):
@@ -76,7 +78,7 @@ def main(cfg: DictConfig):
     #                    padding_mode="border")
     #     ])
     transforms = tio.Compose(
-        [tio.RandomFlip(axes=(0, 1)), tio.RandomAffine(scales=(0.9, 1.1), degrees=(0, 0, 10), translation=(50, 50, 0))])
+        [tio.RandomFlip(axes=(0, 1)), tio.RandomAffine(scales=(1, 1.2), degrees=(0, 0, 10), translation=(50, 50, 0))])
     dataloader_params = {
         'only_every_nth_slice': cfg.data.take_every_nth_slice, 'as_rgb': True,
         'plane': 'axial', 'center_crop': cfg.data.crop_size, 'downsample': False,
@@ -101,10 +103,10 @@ def main(cfg: DictConfig):
 
     logging.info('Init Model')
 
-    if cfg.model.name == 'resnet18V2':
-        model = ResNet18AttentionV2(neighbour_range=cfg.model.neighbour_range, num_attention_heads=cfg.model.num_heads)
+    # if cfg.model.name == 'resnet18V2':
+    #     model = ResNet18AttentionV2(neighbour_range=cfg.model.neighbour_range, num_attention_heads=cfg.model.num_heads)
 
-    elif cfg.model.name == 'resnet18V3':
+    if cfg.model.name == 'resnet18V3':
         model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
                                   num_attention_heads=cfg.model.num_heads, instnorm=True, resnet_type="18")
     elif cfg.model.name == 'resnet34V3':
@@ -125,7 +127,7 @@ def main(cfg: DictConfig):
     optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
                            weight_decay=cfg.training.weight_decay)
     loss_function = torch.nn.BCEWithLogitsLoss().cuda()
-    attention_loss = AttentionLoss(gamma=0).cuda()
+    attention_loss = AttentionLossV2(gamma=0.5).cuda()
     trainer = Trainer(optimizer=optimizer, loss_function=loss_function, attention_loss=attention_loss, check=cfg.check,
                       nth_slice=cfg.data.take_every_nth_slice, crop_size=cfg.data.crop_size, steps_in_epoch=500,
                       calculate_attention_accuracy=False)
@@ -138,7 +140,7 @@ def main(cfg: DictConfig):
                  weight_decay=cfg.training.weight_decay))
     logging.info('Start Training')
 
-    best_test_error = 1  # should be 1
+    best_f1 = 0
     best_epoch = 0
     best_attention = 0
     not_improved_epochs = 0
@@ -151,7 +153,7 @@ def main(cfg: DictConfig):
         train_results = {k + '_train': v for k, v in train_results.items()}
         test_results = {k + '_test': v for k, v in test_results.items()}
 
-        test_error = test_results["error_test"]
+        test_f1 = test_results["f1_score_test"]
         if trainer.calculate_attention_accuracy:
             test_attention = test_results["attention_accuracy_test"]
         else:
@@ -161,15 +163,15 @@ def main(cfg: DictConfig):
         epoch_results.update(test_results)
 
         if cfg.check:
-            logging.info("Model check completed")
-            return
+           logging.info("Model check completed")
+           return
 
-        if test_error < best_test_error:
+        if test_f1 > best_f1:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), str(dir_checkpoint / 'best_model.pth'))
-            logging.info(f"Best new model at epoch {epoch} (smallest test error)!")
+            logging.info(f"Best new model at epoch {epoch} (highest f1 test score)!")
 
-            best_test_error = test_error
+            best_f1 = test_f1
             best_epoch = epoch
             not_improved_epochs = 0
 
@@ -189,9 +191,11 @@ def main(cfg: DictConfig):
         experiment.log(epoch_results)
         torch.save(model.state_dict(), str(dir_checkpoint / 'current_model.pth'))
 
+
+
     torch.save(model.state_dict(), str(dir_checkpoint / 'last_model.pth'))
     logging.info(f'Last checkpoint! Checkpoint {epoch} saved!')
-    logging.info(f"Training completed, best_metric: {best_test_error:.4f} at epoch: {best_epoch}")
+    logging.info(f"Training completed, best_metric (f1-test): {best_f1:.4f} at epoch: {best_epoch}")
 
 
 if __name__ == "__main__":

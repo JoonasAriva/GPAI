@@ -48,8 +48,8 @@ class Trainer:
         class_loss = 0.
         att_loss = 0.
         epoch_error = 0.
-        inclusion_loss = 0.
-        exclusion_loss = 0.
+        mean_loss = 0.
+        max_loss = 0.
         step = 0
         # attention related accuracies
         all_attention_acc = 0.
@@ -105,7 +105,7 @@ class Trainer:
                 forward_times.append(forward_time)
 
                 loss = self.loss_function(Y_prob, bag_label.float())
-                attention_loss, terms = self.attention_loss(A, bag_label.float())
+                attention_loss, terms = self.attention_loss(A)
                 total_loss = loss + attention_loss
 
                 outputs.append(Y_hat.cpu())
@@ -139,10 +139,10 @@ class Trainer:
                     self.optimizer.zero_grad()
                     backprop_time = time.time() - time_backprop
                     backprop_times.append(backprop_time)
-            inc_loss, exc_loss = terms
+            mean_loss, max_loss = terms
 
-            inclusion_loss += inc_loss.item()
-            exclusion_loss += exc_loss.item()
+            mean_loss += mean_loss.item()
+            max_loss += max_loss.item()
 
             epoch_loss += total_loss.item()
             class_loss += loss.item()
@@ -162,11 +162,9 @@ class Trainer:
 
             time_data = time.time()
 
-
-
         # calculate loss and error for epoch
-        inclusion_loss /= nr_of_batches
-        exclusion_loss /= nr_of_batches
+        mean_loss /= nr_of_batches
+        max_loss /= nr_of_batches
         epoch_loss /= nr_of_batches
         epoch_error /= nr_of_batches
         class_loss /= nr_of_batches
@@ -177,6 +175,8 @@ class Trainer:
 
         f1 = f1_score(targets, outputs, average='macro')
 
+        # print("debug mean and max (item): ", mean_loss.item(), max_loss.item())
+        # print("debug class loss: ", class_loss)
         print("data speed: ", round(np.mean(data_times), 3), "forward speed ", round(np.mean(forward_times), 3),
               "backprop speed: ", round(np.mean(backprop_times), 3))
 
@@ -184,7 +184,7 @@ class Trainer:
             '{}: loss: {:.4f}, enc error: {:.4f}, f1 macro score: {:.4f}'.format(
                 "Train" if train else "Validation", epoch_loss, epoch_error, f1))
         print(
-            f"Main classification loss: {round(class_loss, 3)}, attention loss: {round(att_loss, 3)} = (not scaled)(inc: {round(inclusion_loss, 3)}, exc: {round(exclusion_loss, 3)})")
+            f"Main classification loss: {round(class_loss, 3)}, attention loss: {round(att_loss, 3)} = (not scaled)(inc: {round(mean_loss.item(), 3)}, exc: {round(max_loss.item(), 3)})")
 
         results["attention_loss"] = att_loss
         results["classification_loss"] = class_loss
@@ -193,11 +193,17 @@ class Trainer:
         results["error"] = epoch_error
         results["f1_score"] = f1
 
+        results["mean_loss"] = mean_loss.item()
+        results["max_loss"] = max_loss.item()
+
         if self.calculate_attention_accuracy:
             all_attention_acc /= attention_count + 0.001
             tumor_only_attention_acc /= attention_count + 0.001
             results["attention_accuracy"] = all_attention_acc
             results["tumor_attention_accuracy"] = tumor_only_attention_acc
             print("Attention accuracy: ", round(all_attention_acc, 3))
+
+        # cm = wandb.plot.confusion_matrix(probs=None, y_true=targets.reshape(-1), preds=outputs.reshape(-1),class_names=['controls','cases'])
+        # results["cm"] = cm
 
         return results
