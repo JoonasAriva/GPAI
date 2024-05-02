@@ -12,16 +12,17 @@ import numpy as np
 import torch
 import torch.optim as optim
 import torch.utils.data as data_utils
+
 import wandb
-from monai.transforms import *
 from omegaconf import OmegaConf, DictConfig
 from tqdm import tqdm
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
-from data.dataloaders import CT_dataloader
+sys.path.append('/users/arivajoo/GPAI')
+from data.kidney_dataloader import KidneyDataloader
 from train_utils import create_pretrained_medical_resnet
 from monai.networks.nets import resnet18
-
+import torchio as tio
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 # Training settings
 
@@ -128,22 +129,27 @@ def main(cfg: DictConfig):
 
     print('Load Train and Test Set')
 
-    transforms_train = Compose(
-        [
-            RandRotate(range_x=1, prob=1),
-            RandGaussianNoise(prob=0.5, mean=0, std=0.2),
-            RandAffine(prob=0.5, scale_range=(-0.1, 0.1), translate_range=(-50, 50),
-                       padding_mode="border")
-        ])
-
-    dataloader_params = {'datasets': cfg.data.datasets,
-                         'only_every_nth_slice': cfg.data.take_every_nth_slice, 'as_rgb': False,
-                         'plane': 'axial', 'center_crop': cfg.data.crop_size, 'downsample': False}
-    train_dataset = CT_dataloader(dataset_type="train", augmentations=transforms_train, **dataloader_params)
-    test_dataset = CT_dataloader(dataset_type="test", **dataloader_params)
+    transforms = tio.Compose(
+        [tio.RandomFlip(axes=(0, 1)), tio.RandomAffine(scales=(1, 1.2), degrees=(0, 0, 10), translation=(50, 50, 0))])
+    dataloader_params = {
+        'only_every_nth_slice': cfg.data.take_every_nth_slice, 'as_rgb': False,
+        'plane': 'axial', 'center_crop': cfg.data.crop_size, 'downsample': False, 'model_type':'3D'}
+    train_dataset = KidneyDataloader(type="train",
+                                     augmentations=None if not cfg.data.data_augmentations else transforms,
+                                     **dataloader_params)
+    test_dataset = KidneyDataloader(type="test", **dataloader_params)
 
     loader_kwargs = {'num_workers': 4, 'pin_memory': True} if torch.cuda.is_available() else {}
-    train_loader = data_utils.DataLoader(train_dataset, batch_size=1, shuffle=True, **loader_kwargs)
+
+    # create sampler for training set
+    class_sample_count = [train_dataset.controls, train_dataset.cases]
+    weights = 1 / torch.Tensor(class_sample_count)
+    samples_weight = np.array([weights[int(t[0])] for t in train_dataset.labels])
+    samples_weight = torch.from_numpy(samples_weight)
+    samples_weight = samples_weight.double()
+    sampler = torch.utils.data.sampler.WeightedRandomSampler(samples_weight, len(samples_weight), replacement=False)
+
+    train_loader = data_utils.DataLoader(train_dataset, batch_size=1, sampler=sampler, **loader_kwargs)
     test_loader = data_utils.DataLoader(test_dataset, batch_size=1, shuffle=False, **loader_kwargs)
 
     logging.info('Init Model')
@@ -152,12 +158,14 @@ def main(cfg: DictConfig):
         model, inside = create_pretrained_medical_resnet(
             pretrained_path='/gpfs/space/home/joonas97/GPAI/pretrained_models/medicalnet/resnet_18_23dataset.pth',
             model_constructor=resnet18, shortcut_type='A')
-
+    else:
+        model = resnet18(pretrained=False, spatial_dims=3, n_input_channels=1, num_classes=1)
         # if you need to continue training
     if "checkpoint" in cfg.keys():
         print("Using checkpoint", cfg.checkpoint)
         model.load_state_dict(
             torch.load(os.path.join('/gpfs/space/home/joonas97/GPAI/experiments/3d_classification/', cfg.checkpoint)))
+
     if torch.cuda.is_available():
         model.cuda()
     print("gpu mem after loading model: ", torch.cuda.mem_get_info())

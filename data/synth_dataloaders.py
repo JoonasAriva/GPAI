@@ -151,16 +151,23 @@ class SynthDataloader(torch.utils.data.Dataset):
 
         return image
 
-    def add_random_sphere(self, image, z, y, x, radius):
+    def add_class_features(self, image, z, y, x, radius, add_circle):
         size = image.shape[1]
         height = image.shape[2]
 
-        sphere_mask = rg.sphere((size, size, height), radius, (y, x, z))
-        gaussian_noise = torch.FloatTensor(np.random.randn(size, size, height) * 0.4 + 1)
+        square_mask = rg.cube((size, size, height), radius * 3.5, (y, x, z))
+        gaussian_noise_cube = torch.FloatTensor(np.random.randn(size, size, height) * 0.2 + 1)
 
-        image[sphere_mask] = gaussian_noise[sphere_mask]
+        image[square_mask] = gaussian_noise_cube[square_mask]
 
-        return image
+        if add_circle == 1:
+            sphere_mask = rg.sphere((size, size, height), radius, (y, x, z))
+            gaussian_noise_circle = torch.FloatTensor(np.random.randn(size, size, height) * 0.4 + 0.3)
+            image[sphere_mask] = gaussian_noise_circle[sphere_mask]
+            y = torch.tensor([1])
+        else:
+            y = torch.tensor([0])
+        return image, y
 
     def add_random_cube(self, image, z, y, x, side):
         size = image.shape[1]
@@ -190,12 +197,6 @@ class SynthDataloader(torch.utils.data.Dataset):
             add_circle, z, y, x, radius = circle_coordinates
             cz, cy, cx, cr = cyl_coordinates
 
-            if add_circle == 0:
-                # regular noise
-                y = torch.tensor([0])
-            else:
-                img = self.add_random_sphere(img, z, y, x, radius)
-                y = torch.tensor([1])
             for i in range(10):
 
                 xax, yax, zax, elli_x, elli_y, elli_z = elli_coordinates[i]
@@ -206,10 +207,12 @@ class SynthDataloader(torch.utils.data.Dataset):
             img = self.add_random_cylinder(img, cz, cy, cx, radius=cr)
 
             if square_coordinates[0] == 1:
-                for i in range(1):
+                for i in range(3):
                     sx, sy, sz, side = square_coordinates[1][i]
                     img = self.add_random_cube(img, sz, sy, sx, side)
                 # img = self.add_random_cube(img, sz, sy / 2, sx / 2, side)
+
+            img, y = self.add_class_features(img, z, y, x, radius, add_circle)
 
             if self.for_saving:
                 return img, y

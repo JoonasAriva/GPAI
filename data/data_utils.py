@@ -1,23 +1,17 @@
-
+import glob
 import os
 from typing import List
 
-
+import matplotlib
+import numpy as np
 import raster_geometry as rg
-
+import torch
 import torch.nn.functional as F
 from scipy import ndimage as ndi
 from skimage import morphology
-from visualize_utils import get_animation
 
-import numpy as np
-import matplotlib
-import glob
-from IPython.display import display, HTML
-import matplotlib.pyplot as plt
-
-import torch
 matplotlib.rcParams['animation.embed_limit'] = 2 ** 128
+
 
 def add_random_sphere(image):
     size = image.shape[1]
@@ -167,25 +161,24 @@ def downsample_scan(x, scale_factor=0.5):
     return x
 
 
-def normalize_scan(x, single_channel=False):
+def normalize_scan(x, single_channel=False, model_type= "2D"):
     if single_channel:
         xy_dims = (0, 1)
     else:
         xy_dims = (1, 2)
-    # lets find a good threshold to clip away the background
 
-    # min_value = np.min(x)
-    # print("min value of scan: ",min_value)
-    # treshold = min_value + 100
-    #
-    # lower_percent = np.sum((x < treshold)) / len(np.reshape(x,-1))
-    #
-    # clipped_x = np.clip(x, np.percentile(x, q=lower_percent * 100 + 1), np.percentile(x, q=99.5))
+
     clipped_x = np.clip(x, -150, 250)  # soft tissue window
-    norm_x = (clipped_x - np.expand_dims(np.mean(clipped_x, axis=xy_dims), xy_dims)) / (
-            np.expand_dims(np.std(clipped_x, axis=xy_dims), xy_dims) + 1)  # mean 0, std 1 norm
-    norm_x = np.squeeze(norm_x)
-    return norm_x
+
+    if model_type == "2D":
+        norm_x = (clipped_x - np.expand_dims(np.mean(clipped_x, axis=xy_dims), xy_dims)) / (
+                np.expand_dims(np.std(clipped_x, axis=xy_dims), xy_dims) + 1)  # mean 0, std 1 norm
+        norm_x = np.squeeze(norm_x)
+        return norm_x
+    else:
+        norm_x = (clipped_x - np.mean(clipped_x)) / (np.std(clipped_x) + 1)  # mean 0, std 1 norm
+        #norm_x = np.squeeze(norm_x)
+        return norm_x
 
 
 # def custom_highlight_function(x, segmentation):
@@ -201,22 +194,25 @@ def normalize_scan(x, single_channel=False):
 
 def get_kidney_datasets(type: str):
     # type = train, test
-
-    tuh_train_data_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/tuh_train/'
-    tuh_test_data_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/tuh_test/'
+    base_path = '/gpfs/space/projects/BetterMedicine/joonas/'  # hpc
+    #base_path = '/project/project_465001111/ct_data/'  # lumi
+    tuh_train_data_path = base_path + 'kidney/tuh_train/'
+    tuh_test_data_path = base_path + 'kidney/tuh_test/'
     # ts_data_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/total_segmentor'
-    other_datasets_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/data'
+    other_datasets_path = base_path + 'kidney/data'
 
     all_controls = []
     all_tumors = []
-
+ #
     # tuh
     for data_path in [tuh_train_data_path, tuh_test_data_path]:
-        control_path = data_path + '/controls/images/' + type + '/*nii.gz'
-        tumor_path = data_path + '/cases/images/' + type + '/*nii.gz'
+        control_path = data_path + 'controls/images/' + type + '/*nii.gz'
+        tumor_path = data_path + 'cases/images/' + type + '/*nii.gz'
+
 
         control = glob.glob(control_path)
         tumor = glob.glob(tumor_path)
+
 
         all_controls.extend(control)
         all_tumors.extend(tumor)
@@ -235,7 +231,10 @@ def get_kidney_datasets(type: str):
 
     return all_controls, all_tumors
 
+
 import time
+
+
 def remove_table_3d(img):
     start = time.time()
     thresh = -200  # in HU units, it should filter out air :)
@@ -248,7 +247,6 @@ def remove_table_3d(img):
     # Fill the largest region completely (the body of the patient)
     filled_region = ndi.binary_fill_holes(binary)
 
-
     keep_mask = filled_region[:, :, 1:-1]
 
     # remoev small objects not connected to the main body. 40000 pixels per slice seems to do the work for 512x512 resolution
@@ -260,5 +258,5 @@ def remove_table_3d(img):
     # specific fill value does not matter that much if you apply ct windowing afterwards
     maskedimg[~keep_mask] = thresh
     end = time.time()
-    #print("time: ",end-start)
+    # print("time: ",end-start)
     return maskedimg

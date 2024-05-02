@@ -7,6 +7,7 @@ import torchio as tio
 from monai.transforms import *
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
+sys.path.append('/users/arivajoo/GPAI/data')
 from data_utils import get_kidney_datasets, set_orientation, downsample_scan, normalize_scan, remove_table_3d
 
 
@@ -14,7 +15,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
     def __init__(self, only_every_nth_slice: int = 1, type: str = "train", downsample: bool = False,
                  augmentations: callable = None, as_rgb: bool = False,
                  sample_shifting: bool = False, plane: str = 'axial',
-                 center_crop: int = 120, roll_slices=True):
+                 center_crop: int = 120, roll_slices=False, model_type="2D"):
         super(KidneyDataloader, self).__init__()
         self.roll_slices = roll_slices
         self.as_rgb = as_rgb
@@ -23,6 +24,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
         self.sample_shifting = sample_shifting
         self.plane = plane
         self.downsample = downsample
+        self.model_type = model_type
 
         self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))  # 500
 
@@ -94,8 +96,9 @@ class KidneyDataloader(torch.utils.data.Dataset):
             else:
                 for i in range(x.shape[2]):
                     x[:, :, i] = self.augmentations(np.expand_dims(x[:, :, i], 0))
-
-        x = normalize_scan(x, single_channel=False)
+        print("x shape in dataloader: ", x.shape)
+        sys.stdout.flush()
+        x = normalize_scan(x, single_channel=not self.as_rgb, model_type=self.model_type)
 
         if w < 512 or h < 512:
             if w >= h:

@@ -127,7 +127,7 @@ def main(cfg: DictConfig):
     optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
                            weight_decay=cfg.training.weight_decay)
     loss_function = torch.nn.BCEWithLogitsLoss().cuda()
-    attention_loss = AttentionLossV2(gamma=0.5).cuda()
+    attention_loss = AttentionLossV2(gamma=0.8).cuda()
     trainer = Trainer(optimizer=optimizer, loss_function=loss_function, attention_loss=attention_loss, check=cfg.check,
                       nth_slice=cfg.data.take_every_nth_slice, crop_size=cfg.data.crop_size, steps_in_epoch=500,
                       calculate_attention_accuracy=False)

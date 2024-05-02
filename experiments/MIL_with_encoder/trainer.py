@@ -9,6 +9,7 @@ from sklearn.metrics import f1_score
 from tqdm import tqdm
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
+sys.path.append('/users/arivajoo/GPAI')
 from utils.train_utils import find_case_id, attention_accuracy, center_crop_dataframe
 import pandas as pd
 
@@ -50,6 +51,7 @@ class Trainer:
         epoch_error = 0.
         mean_loss = 0.
         max_loss = 0.
+        min_loss = 0.
         step = 0
         # attention related accuracies
         all_attention_acc = 0.
@@ -139,10 +141,11 @@ class Trainer:
                     self.optimizer.zero_grad()
                     backprop_time = time.time() - time_backprop
                     backprop_times.append(backprop_time)
-            mean_loss, max_loss = terms
+            mean_loss, max_loss, min_loss = terms
 
             mean_loss += mean_loss.item()
             max_loss += max_loss.item()
+            min_loss += min_loss.item()
 
             epoch_loss += total_loss.item()
             class_loss += loss.item()
@@ -165,6 +168,7 @@ class Trainer:
         # calculate loss and error for epoch
         mean_loss /= nr_of_batches
         max_loss /= nr_of_batches
+        min_loss /= nr_of_batches
         epoch_loss /= nr_of_batches
         epoch_error /= nr_of_batches
         class_loss /= nr_of_batches
@@ -195,6 +199,7 @@ class Trainer:
 
         results["mean_loss"] = mean_loss.item()
         results["max_loss"] = max_loss.item()
+        results["min_loss"] = min_loss.item()
 
         if self.calculate_attention_accuracy:
             all_attention_acc /= attention_count + 0.001

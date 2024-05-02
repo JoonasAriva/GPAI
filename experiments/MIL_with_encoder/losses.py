@@ -46,4 +46,5 @@ class AttentionLossV2(nn.Module):
 
         a = torch.mean(attention**2)
         b = (1 - torch.max(attention))**2
-        return self.gamma * (a+b), (a,b)
+        c = torch.min(attention)**2
+        return self.gamma * (b+c), (a,b,c)

@@ -13,7 +13,7 @@ training:
 
 model:
   classes: 2
-  name: resnet18
+  name: resnet18x
   pretrained_imagenet: True
 
 
