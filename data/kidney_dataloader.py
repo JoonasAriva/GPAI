@@ -73,7 +73,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
         y = torch.Tensor(self.labels[index])
 
         x = np.clip(x, -1024,None)
-        x = remove_table_3d(x)
+        #x = remove_table_3d(x)
 
         if self.as_rgb:  # if we need 3 channel input
             if self.roll_slices:
@@ -96,8 +96,8 @@ class KidneyDataloader(torch.utils.data.Dataset):
             else:
                 for i in range(x.shape[2]):
                     x[:, :, i] = self.augmentations(np.expand_dims(x[:, :, i], 0))
-        print("x shape in dataloader: ", x.shape)
-        sys.stdout.flush()
+
+
         x = normalize_scan(x, single_channel=not self.as_rgb, model_type=self.model_type)
 
         if w < 512 or h < 512:

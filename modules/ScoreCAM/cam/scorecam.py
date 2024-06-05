@@ -96,37 +96,38 @@ class ScoreCAM_for_attention(BaseCAM):
         self.classifier_score = wrt_classifier_score
 
     def forward(self, input, retain_graph=False):
-        # print("cam forward")
+
         b, c, h, w = input.size()
-        all_slices_saliency_map = torch.zeros((b, h, w))
+
 
         self.model_arch.zero_grad()
         Y_prob, Y_hat, unnorm_attention, cls_scores = self.model_arch(input, return_unnorm_attention=True,
-                                                                      full_pass = True)
+                                                                      full_pass=True)
 
-        # top_att = whole_attention.argsort()[0][-n_biggest:]  # [::-1]
+
         if torch.isnan(unnorm_attention).any():
             print("unorm attention contains nans")
 
-        top_att = unnorm_attention.cpu().flatten().argsort()  # < 0.1
+        top_att = unnorm_attention.cpu().flatten().argsort()
         important_slice_indices = top_att[-6:]  # we visualize 6 biggest
         print("important slices:", important_slice_indices.shape)
 
-        print_activation_shape = True
+
 
         activations = self.activations['value']
         b, k, u, v = activations.size()
         activations = activations[important_slice_indices]
-        if print_activation_shape:
-            print("activations shape: ", activations.shape)
-            print_activation_shape = False
 
-        score_saliency_map = torch.zeros((b, h, w))
+        print("activations shape: ", activations.shape)
+        print("k value:", k)
+
+        score_saliency_map = torch.zeros((6, h, w))
 
         if torch.cuda.is_available():
             activations = activations.cuda()
             score_saliency_map = score_saliency_map.cuda()
-
+        print("all acts: ", activations.shape)
+        print("debug input shape: ", input.shape)
         with torch.no_grad():
             for i in range(k):
 
@@ -134,21 +135,22 @@ class ScoreCAM_for_attention(BaseCAM):
                 saliency_map = torch.unsqueeze(activations[:, i, :, :], 1)
 
                 saliency_map = F.interpolate(saliency_map, size=(h, w), mode='bilinear', align_corners=False)
-
+                # print("sal map, activcations in loop: ", saliency_map.shape)
                 # normalize to 0-1
                 scorecam_base = torch.zeros_like(torch.squeeze(saliency_map))
+
                 min_per_channel = saliency_map.min(dim=2).values.min(dim=2).values.view(-1, 1, 1, 1)
                 max_per_channel = saliency_map.max(dim=2).values.max(dim=2).values.view(-1, 1, 1, 1)
-                good_activations = min_per_channel != max_per_channel
-                good_activations = good_activations.view(-1)
-                # print(saliency_map.shape)
-                norm_saliency_map = (saliency_map[good_activations] - min_per_channel[good_activations]) / (
-                        max_per_channel[good_activations] - min_per_channel[good_activations])
+                # good_activations = min_per_channel != max_per_channel
+                # good_activations = good_activations.view(-1)
+
+                norm_saliency_map = (saliency_map - min_per_channel) / (max_per_channel - min_per_channel)
 
                 # how much increase if keeping the highlighted region
                 # predication on masked input
-
-                filtered_input = input[important_slice_indices][good_activations] * norm_saliency_map
+                if torch.isnan(norm_saliency_map).any():
+                    print("norm saliency map contains nans: ")
+                filtered_input = input[important_slice_indices] * norm_saliency_map
 
                 _, _, new_attention = self.model_arch(filtered_input, return_unnorm_attention=True,
                                                       scorecam_wrt_classifier_score=self.classifier_score)
@@ -162,28 +164,31 @@ class ScoreCAM_for_attention(BaseCAM):
                     print("new attention contains nans: ")
                     print(new_attention)
 
-                scorecam_base[good_activations] += new_attention * torch.squeeze(saliency_map)[good_activations]
-                score_saliency_map[important_slice_indices] += scorecam_base
+                scorecam_base += new_attention * torch.squeeze(saliency_map)
+                score_saliency_map += scorecam_base
 
-        print("nan after loop?: ", torch.isnan(score_saliency_map).any())
+        #print("nan after loop?: ", torch.isnan(score_saliency_map).any())
+
+
         score_saliency_map = F.relu(score_saliency_map)
 
         min_per_channel = score_saliency_map.min(dim=1).values.min(dim=1).values.view(-1, 1, 1)
-        max_per_channel = score_saliency_map.max(dim=1).values.max(dim=1).values.view(-1, 1, 1)
-        good_activations = min_per_channel != max_per_channel
-        good_activations = good_activations.view(-1)
 
-        score_saliency_map[good_activations] = (score_saliency_map[good_activations] - min_per_channel[
-            good_activations]) / (max_per_channel[good_activations] - min_per_channel[good_activations])
+        max_per_channel = score_saliency_map.max(dim=1).values.max(dim=1).values.view(-1, 1, 1)
+
+
+        # good_activations = good_activations.view(-1)
+
+        score_saliency_map = (score_saliency_map - min_per_channel) / (max_per_channel - min_per_channel)
         print("nan after final normalization?: ", torch.isnan(score_saliency_map).any())
-        print("nr of good activations: ", len(good_activations))
+        # print("nr of good activations: ", len(good_activations))
         # all_slices_saliency_map[idx, :, :] = score_saliency_map
 
         _, _, individual_predictions = self.model_arch(input[important_slice_indices],
                                                        scorecam_wrt_classifier_score=True)
-        print("individual predictions for top slices", individual_predictions)
 
-        return score_saliency_map, Y_hat, unnorm_attention,cls_scores
+
+        return score_saliency_map, Y_hat, unnorm_attention, cls_scores
 
     def __call__(self, input, retain_graph=False):
         return self.forward(input, retain_graph)

@@ -10,13 +10,14 @@ from pathlib import Path
 import hydra
 import numpy as np
 import torch
+torch.backends.cudnn.enabled = False
 import torch.optim as optim
 import torch.utils.data as data_utils
 
 import wandb
 from omegaconf import OmegaConf, DictConfig
 from tqdm import tqdm
-
+from torchsummary import summary
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
 from data.kidney_dataloader import KidneyDataloader
@@ -28,6 +29,7 @@ logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 
 dir_checkpoint = Path('./checkpoints/')
 
+os.environ["HYDRA_FULL_ERROR"] = "1"
 
 class Trainer:
     def __init__(self, optimizer, loss_function, crop_size: int = 120, nth_slice: int = 4, check: bool = False):
@@ -64,7 +66,10 @@ class Trainer:
             data = torch.unsqueeze(data, 1)
 
             # data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
-            # print("shape: ", data.shape)
+            print("shape: ", data.shape)
+            print("gpu mem: ", torch.cuda.mem_get_info())
+            print("mem allocated: ", torch.cuda.memory_allocated())
+            sys.stdout.flush()
             data = data.to(self.device, dtype=torch.float16, non_blocking=True)
             bag_label = bag_label.to(self.device, non_blocking=True)
 
@@ -72,7 +77,10 @@ class Trainer:
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
                 # print("b4 forward pass",torch.cuda.mem_get_info(0))
                 Y_prob = model.forward(data)
-
+                print("after infer")
+                print(torch.cuda.memory_reserved() / 1024 / 1024)
+                print(torch.cuda.max_memory_reserved() / 1024 / 1024)
+                sys.stdout.flush()
                 # print("after forward pass", torch.cuda.mem_get_info(0))
                 loss = self.loss_function(Y_prob, bag_label.float())
 
@@ -160,6 +168,7 @@ def main(cfg: DictConfig):
             model_constructor=resnet18, shortcut_type='A')
     else:
         model = resnet18(pretrained=False, spatial_dims=3, n_input_channels=1, num_classes=1)
+        summary(model,(1,120,512,512))
         # if you need to continue training
     if "checkpoint" in cfg.keys():
         print("Using checkpoint", cfg.checkpoint)
@@ -169,7 +178,8 @@ def main(cfg: DictConfig):
     if torch.cuda.is_available():
         model.cuda()
     print("gpu mem after loading model: ", torch.cuda.mem_get_info())
-    # summary(model, (3, 512, 512))
+    print("mem allocated: ",torch.cuda.memory_allocated())
+    #summary(model, (3, 512, 512))
     optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
                            weight_decay=cfg.training.weight_decay)
     loss_function = torch.nn.BCEWithLogitsLoss().cuda()

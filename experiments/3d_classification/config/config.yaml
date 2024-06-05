@@ -22,5 +22,5 @@ data:
   data_augmentations: False
   plane: axial
   datasets: ['TUH_kidney']
-  crop_size: 220
+  crop_size: 80
 check: False

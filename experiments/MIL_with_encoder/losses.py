@@ -48,3 +48,18 @@ class AttentionLossV2(nn.Module):
         b = (1 - torch.max(attention))**2
         c = torch.min(attention)**2
         return self.gamma * (b+c), (a,b,c)
+
+class AttentionLossV3(nn.Module):
+
+    def __init__(self, gamma=0.2):
+        super(AttentionLossV3, self).__init__()
+        self.gamma = gamma
+
+    def forward(self, attention, probs):
+
+        a = torch.mean(attention**2)
+        b = (1 - torch.max(attention))**2
+        c = torch.min(attention)**2
+
+        d = torch.mean((attention - torch.abs(probs))**2)
+        return self.gamma * (b+c+d), (a,b,c,d)

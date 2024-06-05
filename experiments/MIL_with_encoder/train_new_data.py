@@ -14,12 +14,14 @@ import torch.utils.data as data_utils
 import torchio as tio
 import wandb
 from omegaconf import OmegaConf, DictConfig
-
-from losses import AttentionLossV2
+#from torchinfo import summary
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
+sys.path.append('/users/arivajoo/GPAI')
+
 # from models import ResNet18AttentionV2, ResNetAttentionV3
-from current_model import ResNetAttentionV3
+from current_model import ResNetAttentionV3, ResNetSelfAttention2, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, ResNetTransformer
+from losses import AttentionLossV2
 from trainer import Trainer
 from data.kidney_dataloader import KidneyDataloader
 
@@ -29,24 +31,13 @@ logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 dir_checkpoint = Path('./checkpoints/')
 
 # read in statistics about the scans for validation metrics
-test_ROIS = pd.read_csv("/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_test_ROIS.csv")
-train_ROIS = pd.read_csv("/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_train_ROIS.csv")
-train_ROIS_extra = pd.read_csv(
-    "/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_train_ROIS_from_test.csv")
-train_ROIS = pd.concat([train_ROIS, train_ROIS_extra])
+# test_ROIS = pd.read_csv("/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_test_ROIS.csv")
+# train_ROIS = pd.read_csv("/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_train_ROIS.csv")
+# train_ROIS_extra = pd.read_csv(
+#     "/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_train_ROIS_from_test.csv")
+# train_ROIS = pd.concat([train_ROIS, train_ROIS_extra])
 
 np.seterr(divide='ignore', invalid='ignore')
-
-
-# Example usage:
-# Assuming y_true and y_pred are the ground truth and predicted masks, respectively.
-# y_true = torch.tensor([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=torch.float32)
-# y_pred = torch.tensor([[0.1, 0.9, 0.2], [0.8, 0.7, 0.6], [0.3, 0.5, 0.4]], dtype=torch.float32)
-#
-# loss_function = CombinedLoss(alpha=0.5)
-# loss_value = loss_function(y_pred, y_true)
-#
-# print(f"Combined Loss: {loss_value.item()}")
 
 os.environ["WANDB__SERVICE_WAIT"] = "300"
 
@@ -64,19 +55,7 @@ def main(cfg: DictConfig):
 
     print('Load Train and Test Set')
 
-    # transforms_train = Compose(
-    #     [
-    #         RandRotate(range_x=1, prob=1),
-    #         RandGaussianNoise(prob=0.5, mean=0, std=0.2),
-    #         RandAffine(prob=0.5, scale_range=(-0.1, 0.1), translate_range=(-50, 50),
-    #                    padding_mode="border")
-    #     ])
-    # transforms_train2 = Compose(
-    #     [
-    #         RandRotate(range_z=1, prob=1),
-    #         RandAffine(prob=0.5, scale_range=(0, -0.2), translate_range=(-50, 50),
-    #                    padding_mode="border")
-    #     ])
+
     transforms = tio.Compose(
         [tio.RandomFlip(axes=(0, 1)), tio.RandomAffine(scales=(1, 1.2), degrees=(0, 0, 10), translation=(50, 50, 0))])
     dataloader_params = {
@@ -95,7 +74,7 @@ def main(cfg: DictConfig):
     weights = 1 / torch.Tensor(class_sample_count)
     samples_weight = np.array([weights[int(t[0])] for t in train_dataset.labels])
     samples_weight = torch.from_numpy(samples_weight)
-    samples_weigth = samples_weight.double()
+    samples_weight = samples_weight.double()
     sampler = torch.utils.data.sampler.WeightedRandomSampler(samples_weight, len(samples_weight), replacement=False)
 
     train_loader = data_utils.DataLoader(train_dataset, batch_size=1, sampler=sampler, **loader_kwargs)
@@ -112,10 +91,16 @@ def main(cfg: DictConfig):
     elif cfg.model.name == 'resnet34V3':
         model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
                                   num_attention_heads=cfg.model.num_heads, instnorm=True, resnet_type="34")
-        # Let's freeze the backbone
-        # model.backbone.requires_grad_(False)
+    elif cfg.model.name == 'resnetselfattention':
+        model = ResNetSelfAttention2()
+    elif cfg.model.name == 'posembed':
+        model = ResNetTransformerPosEmbed()
+    elif cfg.model.name == 'posenc':
+        model = ResNetTransformerPosEnc()
+    elif cfg.model.name == 'transformer':
+        model = ResNetTransformer(nr_of_blocks=cfg.model.nr_of_blocks)
 
-        # if you need to continue training
+    # if you need to continue training
     if "checkpoint" in cfg.keys():
         print("Using checkpoint", cfg.checkpoint)
         model.load_state_dict(
@@ -123,13 +108,17 @@ def main(cfg: DictConfig):
     if torch.cuda.is_available():
         model.cuda()
 
-    # summary(model, (3, 512, 512))
+    #summary(model,input_size=(300,3,512,512))
     optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
                            weight_decay=cfg.training.weight_decay)
+    steps_in_epoch = 500
+    number_of_epochs = 40
+    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=number_of_epochs * steps_in_epoch,
+                                                    pct_start=0.2, max_lr=cfg.training.learning_rate)
     loss_function = torch.nn.BCEWithLogitsLoss().cuda()
     attention_loss = AttentionLossV2(gamma=0.8).cuda()
-    trainer = Trainer(optimizer=optimizer, loss_function=loss_function, attention_loss=attention_loss, check=cfg.check,
-                      nth_slice=cfg.data.take_every_nth_slice, crop_size=cfg.data.crop_size, steps_in_epoch=500,
+    trainer = Trainer(optimizer=optimizer,scheduler=scheduler,loss_function=loss_function, attention_loss=attention_loss, check=cfg.check,
+                      nth_slice=cfg.data.take_every_nth_slice, crop_size=cfg.data.crop_size, steps_in_epoch=steps_in_epoch,
                       calculate_attention_accuracy=False)
 
     if not cfg.check:
@@ -148,6 +137,8 @@ def main(cfg: DictConfig):
     for epoch in range(1, cfg.training.epochs + 1):
         epoch_results = dict()
         train_results = trainer.run_one_epoch(model, train_loader, epoch, train=True)
+        epoch_results["learning_rate"] = scheduler.get_last_lr()[0]
+
         test_results = trainer.run_one_epoch(model, test_loader, epoch, train=False)
 
         train_results = {k + '_train': v for k, v in train_results.items()}

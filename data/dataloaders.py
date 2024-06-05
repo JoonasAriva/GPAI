@@ -8,6 +8,7 @@ import torchio as tio
 from monai.transforms import *
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
+sys.path.append('/users/arivajoo/GPAI')
 from data_utils import get_dataset_paths, set_orientation, downsample_scan, normalize_scan
 from scipy import ndimage as ndi
 import raster_geometry as rg

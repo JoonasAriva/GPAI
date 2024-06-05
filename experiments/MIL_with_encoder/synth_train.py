@@ -19,8 +19,8 @@ from trainer import Trainer
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 from data.synth_dataloaders import SynthDataloader
-
-from models import ResNet18Attention, ResNet18AttentionV2, ResNetAttentionV4,ResNetAttentionV3
+from losses import AttentionLossV2, AttentionLossV3
+from current_model import ResNetAttentionV3, ResNetSelfAttention2
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 # Training settings
@@ -33,7 +33,7 @@ train_ROIS = pd.read_csv("/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_
 train_ROIS_extra = pd.read_csv(
     "/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_train_ROIS_from_test.csv")
 train_ROIS = pd.concat([train_ROIS, train_ROIS_extra])
-
+os.environ["WANDB__SERVICE_WAIT"] = "300"
 
 @hydra.main(config_path="config", config_name="config", version_base='1.1')
 def main(cfg: DictConfig):
@@ -49,9 +49,9 @@ def main(cfg: DictConfig):
 
     print('Load Train and Test Set')
 
-    train_dataset = SynthDataloader(length=30, premade=True,
+    train_dataset = SynthDataloader(length=1000, premade=True,
                                     train=True)  # from 60 to 100, in premade length is per class
-    test_dataset = SynthDataloader(length=10, premade=True, train=False)  # 20
+    test_dataset = SynthDataloader(length=200, premade=True, train=False)  # 20
 
     loader_kwargs = {'num_workers': 4, 'pin_memory': True} if torch.cuda.is_available() else {}
     train_loader = data_utils.DataLoader(train_dataset, batch_size=1, shuffle=True, **loader_kwargs)
@@ -59,20 +59,15 @@ def main(cfg: DictConfig):
 
     logging.info('Init Model')
 
-    if cfg.model.name == 'resnet18':
-        model = ResNet18Attention(neighbour_range=cfg.model.neighbour_range, num_attention_heads=cfg.model.num_heads)
-        # Let's freeze the backbone
-        # model.backbone.requires_grad_(False)
-
-    elif cfg.model.name == 'resnet18V2':
-        model = ResNet18AttentionV2(neighbour_range=cfg.model.neighbour_range,
-                                    num_attention_heads=cfg.model.num_heads)
-    elif cfg.model.name == 'resnet18V3':
+    if cfg.model.name == 'resnet18V3':
         model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
-                                    num_attention_heads=cfg.model.num_heads, instnorm=True)
-    elif cfg.model.name == 'resnet18V4':
-        model = ResNetAttentionV4(neighbour_range=cfg.model.neighbour_range,
-                                    num_attention_heads=cfg.model.num_heads, instnorm=True)
+                                  num_attention_heads=cfg.model.num_heads, instnorm=True, resnet_type="18")
+    elif cfg.model.name == 'resnet34V3':
+        model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
+                                  num_attention_heads=cfg.model.num_heads, instnorm=True, resnet_type="34")
+
+    elif cfg.model.name == 'resnetselfattention':
+        model = ResNetSelfAttention2(instnorm=True)
         # Let's freeze the backbone
         # model.backbone.requires_grad_(False)
 
@@ -88,9 +83,10 @@ def main(cfg: DictConfig):
     optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
                            weight_decay=cfg.training.weight_decay)
     loss_function = torch.nn.BCEWithLogitsLoss().cuda()
-    attention_loss = AttentionLoss().cuda()
+    #attention_loss = AttentionLossV2(gamma=0.8).cuda()
+    attention_loss = AttentionLossV2(gamma=0).cuda()
     trainer = Trainer(optimizer=optimizer, loss_function=loss_function, attention_loss=attention_loss, check=cfg.check,
-                      nth_slice=cfg.data.take_every_nth_slice, crop_size=cfg.data.crop_size)
+                      nth_slice=cfg.data.take_every_nth_slice, crop_size=cfg.data.crop_size, full_pass_for_each_slice=False)
 
     if not cfg.check:
         experiment = wandb.init(project='MIL_encoder_synth24', resume='allow', anonymous='must')

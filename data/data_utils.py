@@ -161,12 +161,11 @@ def downsample_scan(x, scale_factor=0.5):
     return x
 
 
-def normalize_scan(x, single_channel=False, model_type= "2D"):
+def normalize_scan(x, single_channel=False, model_type="2D"):
     if single_channel:
         xy_dims = (0, 1)
     else:
         xy_dims = (1, 2)
-
 
     clipped_x = np.clip(x, -150, 250)  # soft tissue window
 
@@ -176,8 +175,9 @@ def normalize_scan(x, single_channel=False, model_type= "2D"):
         norm_x = np.squeeze(norm_x)
         return norm_x
     else:
-        norm_x = (clipped_x - np.mean(clipped_x)) / (np.std(clipped_x) + 1)  # mean 0, std 1 norm
-        #norm_x = np.squeeze(norm_x)
+
+        norm_x = (clipped_x - torch.mean(clipped_x)) / (torch.std(clipped_x) + 1)  # mean 0, std 1 norm
+        # norm_x = np.squeeze(norm_x)
         return norm_x
 
 
@@ -194,8 +194,8 @@ def normalize_scan(x, single_channel=False, model_type= "2D"):
 
 def get_kidney_datasets(type: str):
     # type = train, test
-    base_path = '/gpfs/space/projects/BetterMedicine/joonas/'  # hpc
-    #base_path = '/project/project_465001111/ct_data/'  # lumi
+    #base_path = '/gpfs/space/projects/BetterMedicine/joonas/'  # hpc
+    base_path = '/project/project_465001111/ct_data/'  # lumi
     tuh_train_data_path = base_path + 'kidney/tuh_train/'
     tuh_test_data_path = base_path + 'kidney/tuh_test/'
     # ts_data_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/total_segmentor'
@@ -203,16 +203,14 @@ def get_kidney_datasets(type: str):
 
     all_controls = []
     all_tumors = []
- #
+    #
     # tuh
     for data_path in [tuh_train_data_path, tuh_test_data_path]:
         control_path = data_path + 'controls/images/' + type + '/*nii.gz'
         tumor_path = data_path + 'cases/images/' + type + '/*nii.gz'
 
-
         control = glob.glob(control_path)
         tumor = glob.glob(tumor_path)
-
 
         all_controls.extend(control)
         all_tumors.extend(tumor)
@@ -252,7 +250,7 @@ def remove_table_3d(img):
     # remoev small objects not connected to the main body. 40000 pixels per slice seems to do the work for 512x512 resolution
     min_size = 40000 * img.shape[2]
     keep_mask = morphology.remove_small_objects(keep_mask, min_size=min_size)
-    keep_mask = np.expand_dims(keep_mask, 0)
+    #keep_mask = np.expand_dims(keep_mask, 0)
 
     maskedimg = img.detach().clone()
     # specific fill value does not matter that much if you apply ct windowing afterwards

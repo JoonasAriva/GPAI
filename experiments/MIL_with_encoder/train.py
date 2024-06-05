@@ -21,7 +21,7 @@ sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 from data.dataloaders import CT_dataloader
 from models import ResNet18AttentionV2, ResNetAttentionV3
 from trainer import Trainer
-
+from torchsummary import summary
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 # Training settings
 
@@ -112,7 +112,7 @@ def main(cfg: DictConfig):
     if torch.cuda.is_available():
         model.cuda()
 
-    # summary(model, (3, 512, 512))
+
     optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
                            weight_decay=cfg.training.weight_decay)
     loss_function = torch.nn.BCEWithLogitsLoss().cuda()
