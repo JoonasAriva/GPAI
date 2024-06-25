@@ -79,7 +79,7 @@ class ResNetAttentionV3(nn.Module):
         for attention_head in self.attention_heads:
             attention_head.eval()
 
-    def forward(self, x, return_unnorm_attention=False, scorecam_wrt_classifier_score=False, full_pass=False):
+    def forward(self, x, return_unnorm_attention=True, scorecam_wrt_classifier_score=False, full_pass=False):
 
         H = self.backbone(x)
         H = self.adaptive_pooling(H)
