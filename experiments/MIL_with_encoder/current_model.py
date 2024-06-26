@@ -145,7 +145,7 @@ class SelfAttention(nn.Module):
 
         attn_scores = q @ k.transpose(-1, -2) * self.scale
         attn_weights = self.softmax(attn_scores)
-
+        #print("attn weights shape: ", attn_weights.shape)
         out = attn_weights @ v
         out = self.head_merging(out)
         out = self.proj_out(out)
@@ -331,6 +331,70 @@ class ResNetTransformerPosEnc(ResNetSelfAttention2):
         CLS = torch.unsqueeze(H[0, :], dim=0)
 
         Y_prob, Y_hat = self.cls_head(CLS)
+
+        if include_weights:
+            return Y_prob, Y_hat, weights
+        else:
+            return Y_prob, Y_hat
+
+
+class ResNetSelfAttention_variation(nn.Module):
+
+    def __init__(self, neighbour_range=0, num_attention_heads=1, instnorm=False, resnet_type="18"):
+        super().__init__()
+        self.neighbour_range = neighbour_range
+        self.num_attention_heads = num_attention_heads
+        self.instnorm = instnorm
+
+        self.L = 512 * 1 * 1
+        self.D = 128
+        self.K = 1
+        self.resnet_type = resnet_type
+
+        self.adaptive_pooling = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)))
+
+        self.classifier = nn.Sequential(nn.Linear(self.L * self.K, 1))
+        self.sig = nn.Sigmoid()
+
+        if self.instnorm:
+            # load the resnet with instance norm instead of batch norm
+
+            if resnet_type == "18":
+                model = resnet.ResNet(resnet.BasicBlock, [2, 2, 2, 2], norm_layer=MyGroupNorm)
+                sd = resnet18(weights=ResNet18_Weights.DEFAULT).state_dict()
+            elif resnet_type == "34":
+                model = resnet.ResNet(resnet.BasicBlock, [3, 4, 6, 3], norm_layer=MyGroupNorm)
+                sd = resnet34(weights=ResNet34_Weights.DEFAULT).state_dict()
+
+            model.load_state_dict(sd, strict=False)
+        else:
+            if resnet_type == "18":
+                model = resnet18(weights=ResNet18_Weights.DEFAULT)
+            if resnet_type == "34":
+                model = resnet34(weights=ResNet34_Weights.DEFAULT)
+
+        modules = list(model.children())[:-2]
+        self.backbone = nn.Sequential(*modules)
+
+        self.self_attention = SelfAttention(embed_dim=512, num_heads=1)
+        self.cls_token = nn.Parameter(torch.zeros(1, 512))
+        torch.nn.init.trunc_normal_(self.cls_token)
+
+    def forward(self, x, include_weights=False):
+
+        H = self.backbone(x)
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+
+        H = torch.concat((self.cls_token, H), dim=0)
+
+        H, weights = self.self_attention(H)
+
+        CLS = torch.unsqueeze(H[0, :], dim=0)
+
+        Y_prob = self.classifier(CLS)
+        Y_hat = self.sig(Y_prob)
+        Y_hat = torch.ge(Y_hat, 0.5).float()
 
         if include_weights:
             return Y_prob, Y_hat, weights

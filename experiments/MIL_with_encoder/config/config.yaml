@@ -8,12 +8,12 @@ training:
   epochs: 50
   learning_rate: 1e-4
   weight_decay: 5e-4
-  seed: 1
+  seed: 42 #1
 
 
 model:
   classes: 1
-  name: resnetselfattention
+  name: resnetselfattention_variation
   pretrained_imagenet: True
   neighbour_range: 0
   num_heads: 1

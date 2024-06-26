@@ -7,21 +7,21 @@ from pathlib import Path
 
 import hydra
 import numpy as np
-import pandas as pd
 import torch
 import torch.optim as optim
 import torch.utils.data as data_utils
 import torchio as tio
 import wandb
 from omegaconf import OmegaConf, DictConfig
-#from torchinfo import summary
+
+# from torchinfo import summary
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
 
 # from models import ResNet18AttentionV2, ResNetAttentionV3
-from current_model import ResNetAttentionV3, ResNetSelfAttention2, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, ResNetTransformer
-from losses import AttentionLossV2
+from current_model import ResNetAttentionV3, ResNetSelfAttention2, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
+    ResNetTransformer, ResNetSelfAttention_variation
 from trainer import Trainer
 from data.kidney_dataloader import KidneyDataloader
 
@@ -30,16 +30,12 @@ logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 
 dir_checkpoint = Path('./checkpoints/')
 
-# read in statistics about the scans for validation metrics
-# test_ROIS = pd.read_csv("/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_test_ROIS.csv")
-# train_ROIS = pd.read_csv("/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_train_ROIS.csv")
-# train_ROIS_extra = pd.read_csv(
-#     "/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_train_ROIS_from_test.csv")
-# train_ROIS = pd.concat([train_ROIS, train_ROIS_extra])
+
 
 np.seterr(divide='ignore', invalid='ignore')
 
 os.environ["WANDB__SERVICE_WAIT"] = "300"
+
 
 @hydra.main(config_path="config", config_name="config", version_base='1.1')
 def main(cfg: DictConfig):
@@ -54,7 +50,6 @@ def main(cfg: DictConfig):
         print('\nGPU is ON!')
 
     print('Load Train and Test Set')
-
 
     transforms = tio.Compose(
         [tio.RandomFlip(axes=(0, 1)), tio.RandomAffine(scales=(1, 1.2), degrees=(0, 0, 10), translation=(50, 50, 0))])
@@ -92,13 +87,16 @@ def main(cfg: DictConfig):
         model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
                                   num_attention_heads=cfg.model.num_heads, instnorm=True, resnet_type="34")
     elif cfg.model.name == 'resnetselfattention':
-        model = ResNetSelfAttention2()
+        model = ResNetSelfAttention2(instnorm=True)
     elif cfg.model.name == 'posembed':
         model = ResNetTransformerPosEmbed()
     elif cfg.model.name == 'posenc':
         model = ResNetTransformerPosEnc()
     elif cfg.model.name == 'transformer':
         model = ResNetTransformer(nr_of_blocks=cfg.model.nr_of_blocks)
+    elif cfg.model.name == 'resnetselfattention_variation':
+        print("loaded variation")
+        model = ResNetSelfAttention_variation(instnorm=True)
 
     # if you need to continue training
     if "checkpoint" in cfg.keys():
@@ -108,25 +106,25 @@ def main(cfg: DictConfig):
     if torch.cuda.is_available():
         model.cuda()
 
-    #summary(model,input_size=(300,3,512,512))
+    # summary(model,input_size=(300,3,512,512))
     optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
                            weight_decay=cfg.training.weight_decay)
     steps_in_epoch = 500
     number_of_epochs = 40
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=number_of_epochs * steps_in_epoch,
-                                                    pct_start=0.2, max_lr=cfg.training.learning_rate)
+                                              pct_start=0.2, max_lr=cfg.training.learning_rate)
     loss_function = torch.nn.BCEWithLogitsLoss().cuda()
-    attention_loss = AttentionLossV2(gamma=0.8).cuda()
-    trainer = Trainer(optimizer=optimizer,scheduler=scheduler,loss_function=loss_function, attention_loss=attention_loss, check=cfg.check,
-                      nth_slice=cfg.data.take_every_nth_slice, crop_size=cfg.data.crop_size, steps_in_epoch=steps_in_epoch,
-                      calculate_attention_accuracy=False)
+
+    trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, check=cfg.check,
+                      nth_slice=cfg.data.take_every_nth_slice, crop_size=cfg.data.crop_size,
+                      steps_in_epoch=steps_in_epoch)
 
     if not cfg.check:
         experiment = wandb.init(project='MIL_encoder_24', anonymous='must')
         experiment.config.update(
             dict(epochs=cfg.training.epochs,
                  learning_rate=cfg.training.learning_rate, model_name=cfg.model.name,
-                 weight_decay=cfg.training.weight_decay))
+                 weight_decay=cfg.training.weight_decay, config= cfg))
     logging.info('Start Training')
 
     best_f1 = 0
@@ -154,8 +152,8 @@ def main(cfg: DictConfig):
         epoch_results.update(test_results)
 
         if cfg.check:
-           logging.info("Model check completed")
-           return
+            logging.info("Model check completed")
+            return
 
         if test_f1 > best_f1:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
@@ -181,8 +179,6 @@ def main(cfg: DictConfig):
             not_improved_epochs += 1
         experiment.log(epoch_results)
         torch.save(model.state_dict(), str(dir_checkpoint / 'current_model.pth'))
-
-
 
     torch.save(model.state_dict(), str(dir_checkpoint / 'last_model.pth'))
     logging.info(f'Last checkpoint! Checkpoint {epoch} saved!')
