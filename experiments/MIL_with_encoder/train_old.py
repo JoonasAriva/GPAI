@@ -7,34 +7,45 @@ from pathlib import Path
 
 import hydra
 import numpy as np
+import pandas as pd
 import torch
 import torch.optim as optim
 import torch.utils.data as data_utils
-import torchio as tio
 import wandb
+from monai.transforms import *
 from omegaconf import OmegaConf, DictConfig
-
-# from torchinfo import summary
+import torchio as tio
+from losses import AttentionLoss
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
-sys.path.append('/users/arivajoo/GPAI')
-
-# from models import ResNet18AttentionV2, ResNetAttentionV3
-from current_model import ResNetAttentionV3, ResNetSelfAttention2, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
-    ResNetTransformer, ResNetSelfAttention_variation
+from data.dataloaders import CT_dataloader
+from models import ResNet18AttentionV2, ResNetAttentionV3
 from trainer import Trainer
-from data.kidney_dataloader import KidneyDataloader
-
+from torchsummary import summary
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 # Training settings
 
 dir_checkpoint = Path('./checkpoints/')
 
-
+# read in statistics about the scans for validation metrics
+test_ROIS = pd.read_csv("/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_test_ROIS.csv")
+train_ROIS = pd.read_csv("/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_train_ROIS.csv")
+train_ROIS_extra = pd.read_csv(
+    "/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_train_ROIS_from_test.csv")
+train_ROIS = pd.concat([train_ROIS, train_ROIS_extra])
 
 np.seterr(divide='ignore', invalid='ignore')
 
-os.environ["WANDB__SERVICE_WAIT"] = "300"
+
+# Example usage:
+# Assuming y_true and y_pred are the ground truth and predicted masks, respectively.
+# y_true = torch.tensor([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=torch.float32)
+# y_pred = torch.tensor([[0.1, 0.9, 0.2], [0.8, 0.7, 0.6], [0.3, 0.5, 0.4]], dtype=torch.float32)
+#
+# loss_function = CombinedLoss(alpha=0.5)
+# loss_value = loss_function(y_pred, y_true)
+#
+# print(f"Combined Loss: {loss_value.item()}")
 
 
 @hydra.main(config_path="config", config_name="config", version_base='1.1')
@@ -51,54 +62,49 @@ def main(cfg: DictConfig):
 
     print('Load Train and Test Set')
 
+    # transforms_train = Compose(
+    #     [
+    #         RandRotate(range_x=1, prob=1),
+    #         RandGaussianNoise(prob=0.5, mean=0, std=0.2),
+    #         RandAffine(prob=0.5, scale_range=(-0.1, 0.1), translate_range=(-50, 50),
+    #                    padding_mode="border")
+    #     ])
+    # transforms_train2 = Compose(
+    #     [
+    #         RandRotate(range_z=1, prob=1),
+    #         RandAffine(prob=0.5, scale_range=(0, -0.2), translate_range=(-50, 50),
+    #                    padding_mode="border")
+    #     ])
     transforms = tio.Compose(
-        [tio.RandomFlip(axes=(0, 1)), tio.RandomAffine(scales=(1, 1.2), degrees=(0, 0, 10), translation=(50, 50, 0))])
-    dataloader_params = {
-        'only_every_nth_slice': cfg.data.take_every_nth_slice, 'as_rgb': True,
-        'plane': 'axial', 'center_crop': cfg.data.crop_size, 'downsample': False,
-        'roll_slices': cfg.data.roll_slices}
-    train_dataset = KidneyDataloader(type="train",
-                                     augmentations=None if not cfg.data.data_augmentations else transforms,
-                                     **dataloader_params)
-    test_dataset = KidneyDataloader(type="test", **dataloader_params)
+        [tio.RandomFlip(axes=(0, 1)), tio.RandomAffine(scales=(0.9, 1.1), degrees=(0, 0, 10), translation=(50, 50, 0))])
+    dataloader_params = {'datasets': cfg.data.datasets,
+                         'only_every_nth_slice': cfg.data.take_every_nth_slice, 'as_rgb': True,
+                         'plane': 'axial', 'center_crop': cfg.data.crop_size, 'downsample': False,
+                         'roll_slices': cfg.data.roll_slices}
+    train_dataset = CT_dataloader(dataset_type="train",
+                                  augmentations=None if not cfg.data.data_augmentations else transforms,
+                                  **dataloader_params)
+    test_dataset = CT_dataloader(dataset_type="test", **dataloader_params)
 
     loader_kwargs = {'num_workers': 4, 'pin_memory': True} if torch.cuda.is_available() else {}
-
-    # create sampler for training set
-    class_sample_count = [train_dataset.controls, train_dataset.cases]
-    weights = 1 / torch.Tensor(class_sample_count)
-    samples_weight = np.array([weights[int(t[0])] for t in train_dataset.labels])
-    samples_weight = torch.from_numpy(samples_weight)
-    samples_weight = samples_weight.double()
-    sampler = torch.utils.data.sampler.WeightedRandomSampler(samples_weight, len(samples_weight), replacement=False)
-
-    train_loader = data_utils.DataLoader(train_dataset, batch_size=1, sampler=sampler, **loader_kwargs)
+    train_loader = data_utils.DataLoader(train_dataset, batch_size=1, shuffle=True, **loader_kwargs)
     test_loader = data_utils.DataLoader(test_dataset, batch_size=1, shuffle=False, **loader_kwargs)
 
     logging.info('Init Model')
 
-    # if cfg.model.name == 'resnet18V2':
-    #     model = ResNet18AttentionV2(neighbour_range=cfg.model.neighbour_range, num_attention_heads=cfg.model.num_heads)
+    if cfg.model.name == 'resnet18V2':
+        model = ResNet18AttentionV2(neighbour_range=cfg.model.neighbour_range, num_attention_heads=cfg.model.num_heads)
 
-    if cfg.model.name == 'resnet18V3':
+    elif cfg.model.name == 'resnet18V3':
         model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
                                   num_attention_heads=cfg.model.num_heads, instnorm=True, resnet_type="18")
     elif cfg.model.name == 'resnet34V3':
         model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
                                   num_attention_heads=cfg.model.num_heads, instnorm=True, resnet_type="34")
-    elif cfg.model.name == 'resnetselfattention':
-        model = ResNetSelfAttention2(instnorm=True)
-    elif cfg.model.name == 'posembed':
-        model = ResNetTransformerPosEmbed()
-    elif cfg.model.name == 'posenc':
-        model = ResNetTransformerPosEnc()
-    elif cfg.model.name == 'transformer':
-        model = ResNetTransformer(nr_of_blocks=cfg.model.nr_of_blocks)
-    elif cfg.model.name == 'resnetselfattention_variation':
-        print("loaded variation")
-        model = ResNetSelfAttention_variation(instnorm=True)
+        # Let's freeze the backbone
+        # model.backbone.requires_grad_(False)
 
-    # if you need to continue training
+        # if you need to continue training
     if "checkpoint" in cfg.keys():
         print("Using checkpoint", cfg.checkpoint)
         model.load_state_dict(
@@ -106,28 +112,24 @@ def main(cfg: DictConfig):
     if torch.cuda.is_available():
         model.cuda()
 
-    # summary(model,input_size=(300,3,512,512))
+
     optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
                            weight_decay=cfg.training.weight_decay)
-    steps_in_epoch = 500
-    number_of_epochs = 40
-    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=number_of_epochs * steps_in_epoch,
-                                              pct_start=0.2, max_lr=cfg.training.learning_rate)
     loss_function = torch.nn.BCEWithLogitsLoss().cuda()
-
-    trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, check=cfg.check,
+    attention_loss = AttentionLoss().cuda()
+    trainer = Trainer(optimizer=optimizer, loss_function=loss_function, attention_loss=attention_loss, check=cfg.check,
                       nth_slice=cfg.data.take_every_nth_slice, crop_size=cfg.data.crop_size,
-                      steps_in_epoch=steps_in_epoch)
+                      calculate_attention_accuracy=True)
 
     if not cfg.check:
-        experiment = wandb.init(project='MIL_encoder_24', anonymous='must')
+        experiment = wandb.init(project='MIL_encoder_24', resume='must',id='m6sf65ks', anonymous='must')
         experiment.config.update(
             dict(epochs=cfg.training.epochs,
                  learning_rate=cfg.training.learning_rate, model_name=cfg.model.name,
-                 weight_decay=cfg.training.weight_decay, config= cfg))
+                 weight_decay=cfg.training.weight_decay))
     logging.info('Start Training')
 
-    best_f1 = 0
+    best_test_error = 1  # should be 1
     best_epoch = 0
     best_attention = 0
     not_improved_epochs = 0
@@ -135,18 +137,13 @@ def main(cfg: DictConfig):
     for epoch in range(1, cfg.training.epochs + 1):
         epoch_results = dict()
         train_results = trainer.run_one_epoch(model, train_loader, epoch, train=True)
-        epoch_results["learning_rate"] = scheduler.get_last_lr()[0]
-
         test_results = trainer.run_one_epoch(model, test_loader, epoch, train=False)
 
         train_results = {k + '_train': v for k, v in train_results.items()}
         test_results = {k + '_test': v for k, v in test_results.items()}
 
-        test_f1 = test_results["f1_score_test"]
-        if trainer.calculate_attention_accuracy:
-            test_attention = test_results["attention_accuracy_test"]
-        else:
-            test_attention = 0
+        test_error = test_results["error_test"]
+        test_attention = test_results["attention_accuracy_test"]
 
         epoch_results.update(train_results)
         epoch_results.update(test_results)
@@ -155,12 +152,12 @@ def main(cfg: DictConfig):
             logging.info("Model check completed")
             return
 
-        if test_f1 > best_f1:
+        if test_error < best_test_error:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), str(dir_checkpoint / 'best_model.pth'))
-            logging.info(f"Best new model at epoch {epoch} (highest f1 test score)!")
+            logging.info(f"Best new model at epoch {epoch} (smallest test error)!")
 
-            best_f1 = test_f1
+            best_test_error = test_error
             best_epoch = epoch
             not_improved_epochs = 0
 
@@ -182,7 +179,7 @@ def main(cfg: DictConfig):
 
     torch.save(model.state_dict(), str(dir_checkpoint / 'last_model.pth'))
     logging.info(f'Last checkpoint! Checkpoint {epoch} saved!')
-    logging.info(f"Training completed, best_metric (f1-test): {best_f1:.4f} at epoch: {best_epoch}")
+    logging.info(f"Training completed, best_metric: {best_test_error:.4f} at epoch: {best_epoch}")
 
 
 if __name__ == "__main__":

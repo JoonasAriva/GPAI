@@ -28,11 +28,7 @@ logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 dir_checkpoint = Path('./checkpoints/')
 
 # read in statistics about the scans for validation metrics
-test_ROIS = pd.read_csv("/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_test_ROIS.csv")
-train_ROIS = pd.read_csv("/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_train_ROIS.csv")
-train_ROIS_extra = pd.read_csv(
-    "/gpfs/space/projects/BetterMedicine/joonas/tuh_kidney_study/axial_train_ROIS_from_test.csv")
-train_ROIS = pd.concat([train_ROIS, train_ROIS_extra])
+
 os.environ["WANDB__SERVICE_WAIT"] = "300"
 
 @hydra.main(config_path="config", config_name="config", version_base='1.1')

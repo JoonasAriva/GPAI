@@ -1,6 +1,6 @@
 hydra:
   run:
-    dir: results/${hydra.job.name}/${model.name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: results/${hydra.job.name}/${model.name}/${data.dataloader}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 project: MIL_TUH_EXP
 
@@ -8,12 +8,12 @@ training:
   epochs: 50
   learning_rate: 1e-4
   weight_decay: 5e-4
-  seed: 42 #1
+  seed: 1
 
 
 model:
   classes: 1
-  name: resnetselfattention_variation
+  name: resnetgroup
   pretrained_imagenet: True
   neighbour_range: 0
   num_heads: 1
@@ -25,6 +25,7 @@ data:
   data_augmentations: True
   plane: axial
   datasets: ['TUH_kidney']
-  crop_size: 300 #
+  dataloader: kidney_real
+  crop_size: 300
   roll_slices: True
 check: False

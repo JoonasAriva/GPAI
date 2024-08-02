@@ -92,16 +92,19 @@ class SynthDataloader(torch.utils.data.Dataset):
                 path = "train/"
             else:
                 path = "test/"
-
-            data_pos = glob.glob('/gpfs/space/home/joonas97/GPAI/data/preloaded_synth_data/' + path + "pos/*.pt")[
+            # /gpfs/space/home/joonas97/GPAI/data/preloaded_synth_data/
+            data_pos = glob.glob('/scratch/project_465001111/preloaded_synth_data/' + path + "pos/*.pt")[
                        :length]
-            data_neg = glob.glob('/gpfs/space/home/joonas97/GPAI/data/preloaded_synth_data/' + path + "neg/*.pt")[
+            data_neg = glob.glob('/scratch/project_465001111/preloaded_synth_data/' + path + "neg/*.pt")[
                        :length]
-
+            #print('/scratch/project_465001111/preloaded_synth_data/' + path + "neg/*.pt")
+            #print(data_pos)
             neg_labels = [torch.tensor([0])] * len(data_neg)
             pos_labels = [torch.tensor([1])] * len(data_pos)
             self.labels = pos_labels + neg_labels
             self.paths = data_pos + data_neg
+
+            return
 
         for i in range(length):
             add_circle = np.random.randint(0, 2)
