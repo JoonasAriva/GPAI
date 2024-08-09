@@ -381,6 +381,44 @@ class ResNetGrouping(ResNetSelfAttention):
         Y_hat = torch.ge(Y_hat, 0.5).float()
 
         if include_weights:
-            return Y_prob, Y_hat, group_attentions
+            return Y_prob, Y_hat, group_attentions, M, group_average_features
+        else:
+            return Y_prob, Y_hat
+
+
+class SelfSelectionNet(ResNetSelfAttention):
+
+    def __init__(self, instnorm):
+        super().__init__(instnorm)
+
+        self.attention = AttentionHeadV3(512, 128, 1)
+        self.relu = nn.LeakyReLU()
+        self.window_size = 10
+    def forward(self, x, include_weights=False):
+
+        H = self.backbone(x)
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+        groups = H.unfold(dimension=0, size=self.window_size, step=self.window_size).permute(0,2,1)
+        group_average_features = groups.mean(axis=1) # mean or max or highest abs value?
+        group_attentions = self.attention(group_average_features)
+
+        thresholded_attentions = self.relu(group_attentions)
+        attentions = einops.repeat(thresholded_attentions, 'i j-> (i copy) j', copy=self.window_size)
+        A = F.softmax(attentions, dim=1).T
+        M = torch.mm(A, H)
+
+        # H = torch.concat((self.cls_token, H), dim=0)
+        #
+        # H, weights = self.self_attention(H)
+        #
+        # CLS = torch.unsqueeze(H[0, :], dim=0)
+
+        Y_prob = self.classifier(M)
+        Y_hat = self.sig(Y_prob)
+        Y_hat = torch.ge(Y_hat, 0.5).float()
+
+        if include_weights:
+            return Y_prob, Y_hat, group_attentions, thresholded_attentions, attentions, A
         else:
             return Y_prob, Y_hat

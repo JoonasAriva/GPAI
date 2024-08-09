@@ -50,7 +50,7 @@ def main(cfg: DictConfig):
         steps_in_epoch = 500
         proj_name = "MIL_encoder_24"
     elif cfg.data.dataloader == "synthetic":
-        steps_in_epoch = 1000
+        steps_in_epoch = 500
         proj_name = "MIL_encoder_synth24"
 
     logging.info('Init Model')
@@ -73,8 +73,7 @@ def main(cfg: DictConfig):
                                               pct_start=0.2, max_lr=cfg.training.learning_rate)
     loss_function = torch.nn.BCEWithLogitsLoss().cuda()
 
-    trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, check=cfg.check,
-                      nth_slice=cfg.data.take_every_nth_slice, crop_size=cfg.data.crop_size,
+    trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                       steps_in_epoch=steps_in_epoch)
 
     if not cfg.check:

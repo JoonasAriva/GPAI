@@ -2,7 +2,7 @@ import re
 
 import numpy as np
 from skimage.filters import threshold_otsu
-
+from sklearn.metrics import average_precision_score
 
 def attention_accuracy(attention, df):
 
@@ -45,3 +45,28 @@ def center_crop_dataframe(df, crop_size):
 
         df.reset_index(inplace=True)
     return df
+
+
+def evaluate_attention(attention, df, case_id, crop_size, nth_slice):
+
+    scan_df = df.loc[df["file_name"] == case_id + ".nii.gz"].copy()[::nth_slice]
+
+    cropped_scan_df = center_crop_dataframe(scan_df, crop_size)
+    print("cropped scan: ", len(cropped_scan_df))
+    print("attention: ", len(attention))
+    ap_all, ap_tumor = calculate_ap(attention, cropped_scan_df)
+
+    return ap_all, ap_tumor
+
+def calculate_ap(attention, df):
+
+    df.loc[(df["kidney"] > 0) | (df["tumor"] > 0) | (df["cyst"] > 0), "important_all"] = 1
+    df["important_all"] = df["important_all"].fillna(0)
+
+    df.loc[df["tumor"] > 0, "important_tumor"] = 1
+    df["important_tumor"] = df["important_tumor"].fillna(0)
+
+    ap_all = average_precision_score(df["important_all"],attention)
+    ap_tumor = average_precision_score(df["important_tumor"],attention)
+
+    return round(ap_all, 2), round(ap_tumor, 2)

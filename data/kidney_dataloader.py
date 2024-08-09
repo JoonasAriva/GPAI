@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torchio as tio
 from monai.transforms import *
-
+import re
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
 sys.path.append('/users/arivajoo/GPAI/data')
 from data_utils import get_kidney_datasets, set_orientation, downsample_scan, normalize_scan, remove_table_3d
@@ -57,6 +57,11 @@ class KidneyDataloader(torch.utils.data.Dataset):
 
         path = self.img_paths[index]
 
+        # find scan id from path
+        match = path.split('/')[-1]
+        case_id = match.replace("_0000.nii",".nii")
+
+
         x = nib.load(path).get_fdata()
 
         x = set_orientation(x, path, self.plane)
@@ -107,4 +112,4 @@ class KidneyDataloader(torch.utils.data.Dataset):
                 x = tio.Resize((int(512 * w / h), 512, d))(x)
         # x = x.as_tensor()
 
-        return x, y, self.img_paths[index]
+        return x, y, case_id

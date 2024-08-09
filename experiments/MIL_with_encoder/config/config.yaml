@@ -13,7 +13,7 @@ training:
 
 model:
   classes: 1
-  name: resnetgroup
+  name: resnet18V3
   pretrained_imagenet: True
   neighbour_range: 0
   num_heads: 1
