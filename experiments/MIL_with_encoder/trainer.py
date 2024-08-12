@@ -99,7 +99,7 @@ class Trainer:
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
                 Y_prob, Y_hat, attention = model.forward(data)
-                print("attention len: ",len(attention[0]))
+
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 

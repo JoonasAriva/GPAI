@@ -27,7 +27,8 @@ class AttentionHeadV3(nn.Module):
         self.head = nn.Sequential(
             nn.Linear(L, D),
             nn.Tanh(),
-            nn.Linear(D, K)
+            nn.Linear(D, K),
+            nn.Sigmoid()
         )
 
     def forward(self, x):
@@ -112,14 +113,8 @@ class ResNetAttentionV3(nn.Module):
         Y_hat = self.sig(Y_prob)
         Y_hat = torch.ge(Y_hat, 0.5).float()
 
-        if full_pass:
-            Y_probs = self.classifier(H)
-            # Y_probs = self.sig(Y_probs)
-            return Y_prob, Y_hat, unnorm_A, Y_probs  #
-        if return_unnorm_attention:
-            return Y_prob, Y_hat, A
-        else:  # i think this part is not used currently
-            return Y_prob, Y_hat, unnorm_A, H, attention_maps
+        return Y_prob, Y_hat, unnorm_A
+
 
 
 class SelfAttention(nn.Module):
