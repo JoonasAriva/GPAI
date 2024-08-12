@@ -127,18 +127,17 @@ def center_crop_dataframe(df, crop_size):
     return df
 
 
-def evaluate_attention(attention, df, case_id, crop_size, nth_slice):
-
+def evaluate_attention(attention, df, case_id, crop_size, nth_slice, bag_label):
     scan_df = df.loc[df["file_name"] == case_id].copy()[::nth_slice]
 
     cropped_scan_df = center_crop_dataframe(scan_df, crop_size)
 
-    ap_all, ap_tumor = calculate_ap(attention, cropped_scan_df)
+    ap_all, ap_tumor = calculate_ap(attention, cropped_scan_df, bag_label)
 
     return ap_all, ap_tumor
 
 
-def calculate_ap(attention, df):
+def calculate_ap(attention, df, bag_label):
     df.loc[(df["kidney"] > 0) | (df["tumor"] > 0) | (df["cyst"] > 0), "important_all"] = 1
     df["important_all"] = df["important_all"].fillna(0)
 
@@ -146,7 +145,11 @@ def calculate_ap(attention, df):
     df["important_tumor"] = df["important_tumor"].fillna(0)
 
     attention = attention.detach().cpu().numpy()
-    ap_all = average_precision_score(df["important_all"], attention)
-    ap_tumor = average_precision_score(df["important_tumor"], attention)
 
+    ap_all = average_precision_score(df["important_all"], attention)
+
+    if bag_label:
+        ap_tumor = average_precision_score(df["important_tumor"], attention)
+    else:
+        ap_tumor = 0
     return round(ap_all, 2), round(ap_tumor, 2)

@@ -28,4 +28,4 @@ data:
   dataloader: kidney_real
   crop_size: 300
   roll_slices: True
-check: False
+check: True

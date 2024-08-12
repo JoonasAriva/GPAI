@@ -111,17 +111,18 @@ class Trainer:
                 targets.append(bag_label.cpu())
 
                 # calculate attention accuracy
-                ap_all, ap_tumor = evaluate_attention(attention.cpu()[0], self.train_statistics if train else self.test_statistics, case_id[0],
-                                                      self.crop_size, self.nth_slice)
+                ap_all, ap_tumor = evaluate_attention(attention.cpu()[0],
+                                                      self.train_statistics if train else self.test_statistics,
+                                                      case_id[0],
+                                                      self.crop_size, self.nth_slice, bag_label=bag_label)
                 attention_scores["all_scans"][0].append(ap_all)
-                attention_scores["all_scans"][1].append(ap_tumor)
 
                 if bag_label:
                     attention_scores["cases"][0].append(ap_all)
                     attention_scores["cases"][1].append(ap_tumor)
                 else:
                     attention_scores["controls"][0].append(ap_all)
-                    attention_scores["controls"][1].append(ap_tumor)
+
 
             if train:
                 if (step) % 1 == 0 or (step) == len(data_loader):
@@ -164,7 +165,6 @@ class Trainer:
         f1 = f1_score(targets, outputs, average='macro')
 
         results["attention_map_all_scans_full_kidney"] = np.mean(attention_scores["all_scans"][0])
-        results["attention_map_all_scans_tumor"] = np.mean(attention_scores["all_scans"][1])
         results["attention_map_cases_full_kidney"] = np.mean(attention_scores["cases"][0])
         results["attention_map_cases_tumor"] = np.mean(attention_scores["cases"][1])
         results["attention_map_controls_full_kidney"] = np.mean(attention_scores["controls"][0])
