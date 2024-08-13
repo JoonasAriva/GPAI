@@ -68,7 +68,7 @@ def main(cfg: DictConfig):
     optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
                            weight_decay=cfg.training.weight_decay)
 
-    number_of_epochs = 40
+    number_of_epochs = 50
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=number_of_epochs * steps_in_epoch,
                                               pct_start=0.2, max_lr=cfg.training.learning_rate)
     loss_function = torch.nn.BCEWithLogitsLoss().cuda()

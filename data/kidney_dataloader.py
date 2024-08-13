@@ -85,11 +85,12 @@ class KidneyDataloader(torch.utils.data.Dataset):
 
                 roll_forward = np.roll(x, 1, axis=(2))
                 # mirror the first slice
-                roll_forward[:, :, 0] = roll_forward[:, :, 1]
+                #roll_forward[:, :, 0] = roll_forward[:, :, 1]
                 roll_back = np.roll(x, -1, axis=(2))
                 # mirror the first slice
-                roll_back[:, :, -1] = roll_back[:, :, -2]
+                #roll_back[:, :, -1] = roll_back[:, :, -2]
                 x = np.stack((roll_back, x, roll_forward), axis=0)
+                x = x[:,:,:, 1:-1]
             else:
                 x = np.concatenate((x, x, x), axis=0)
 

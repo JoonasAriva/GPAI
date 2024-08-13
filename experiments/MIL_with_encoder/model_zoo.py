@@ -28,7 +28,7 @@ class AttentionHeadV3(nn.Module):
             nn.Linear(L, D),
             nn.Tanh(),
             nn.Linear(D, K),
-            nn.Sigmoid()
+            #nn.Sigmoid()
         )
 
     def forward(self, x):

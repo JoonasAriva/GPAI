@@ -26,6 +26,6 @@ data:
   plane: axial
   datasets: ['TUH_kidney']
   dataloader: kidney_real
-  crop_size: 300
+  crop_size: 302
   roll_slices: True
-check: True
+check: False
