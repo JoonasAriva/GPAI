@@ -26,6 +26,8 @@ class KidneyDataloader(torch.utils.data.Dataset):
         self.downsample = downsample
         self.model_type = model_type
 
+        if roll_slices:
+            center_crop = center_crop
         self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))  # 500
 
         self.resizer = Resize(spatial_size=512, size_mode="longest")
@@ -58,9 +60,11 @@ class KidneyDataloader(torch.utils.data.Dataset):
         path = self.img_paths[index]
 
         # find scan id from path
+        print("path: ", path)
         match = path.split('/')[-1]
+        print("match: ", match)
         case_id = match.replace("_0000.nii",".nii")
-
+        print("case_id: ", case_id)
 
         x = nib.load(path).get_fdata()
 

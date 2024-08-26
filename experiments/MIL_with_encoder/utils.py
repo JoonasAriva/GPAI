@@ -11,7 +11,7 @@ from data.kidney_dataloader import KidneyDataloader
 from data.synth_dataloaders import SynthDataloader
 
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
-    ResNetTransformer, ResNetGrouping, SelfSelectionNet
+    ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple
 
 import re
 
@@ -81,6 +81,10 @@ def pick_model(cfg: DictConfig):
         model = ResNetGrouping(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'selfselectionnet':
         model = SelfSelectionNet(instnorm=cfg.model.inst_norm)
+    elif cfg.model.name == 'twostagenet':
+        model = TwoStageNet(instnorm=cfg.model.inst_norm)
+    elif cfg.model.name == 'twostagenet_simple':
+        model = TwoStageNetSimple(instnorm=cfg.model.inst_norm)
 
     return model
 
@@ -126,12 +130,16 @@ def center_crop_dataframe(df, crop_size):
         df.reset_index(inplace=True)
     return df
 
-
-def evaluate_attention(attention, df, case_id, crop_size, nth_slice, bag_label):
+def prepare_statistics_dataframe(df, case_id, crop_size, nth_slice, roll_slices):
     scan_df = df.loc[df["file_name"] == case_id].copy()[::nth_slice]
 
     cropped_scan_df = center_crop_dataframe(scan_df, crop_size)
+    if roll_slices:
+        cropped_scan_df = cropped_scan_df[1:-1].copy()
+    return cropped_scan_df
 
+def evaluate_attention(attention, df, case_id, crop_size, nth_slice, bag_label, roll_slices):
+    cropped_scan_df = prepare_statistics_dataframe(df, case_id, crop_size, nth_slice, roll_slices)
     ap_all, ap_tumor = calculate_ap(attention, cropped_scan_df, bag_label)
 
     return ap_all, ap_tumor

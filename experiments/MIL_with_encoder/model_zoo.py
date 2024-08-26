@@ -7,6 +7,7 @@ from torch import Tensor as T
 from torchvision.models import resnet
 from torchvision.models import resnet18, ResNet18_Weights, resnet34, ResNet34_Weights
 
+
 # from experiments.MIL_with_encoder.models import Attention
 
 
@@ -28,7 +29,7 @@ class AttentionHeadV3(nn.Module):
             nn.Linear(L, D),
             nn.Tanh(),
             nn.Linear(D, K),
-            #nn.Sigmoid()
+            # nn.Sigmoid()
         )
 
     def forward(self, x):
@@ -114,7 +115,6 @@ class ResNetAttentionV3(nn.Module):
         Y_hat = torch.ge(Y_hat, 0.5).float()
 
         return Y_prob, Y_hat, unnorm_A
-
 
 
 class SelfAttention(nn.Module):
@@ -319,7 +319,7 @@ class ResNetTransformerPosEmbed(ResNetSelfAttention):
 
 class ResNetTransformerPosEnc(ResNetSelfAttention):
 
-    def __init__(self,instnorm):
+    def __init__(self, instnorm):
         super().__init__(instnorm)
         self.pos_enc = PositionalEncoding1D(512)
 
@@ -358,7 +358,7 @@ class ResNetGrouping(ResNetSelfAttention):
         H = self.backbone(x)
         H = self.adaptive_pooling(H)
         H = H.view(-1, 512 * 1 * 1)
-        groups = H.unfold(dimension=0, size=10, step=10).permute(0,2,1)
+        groups = H.unfold(dimension=0, size=10, step=10).permute(0, 2, 1)
         group_average_features = groups.mean(axis=1)
         group_attentions = self.attention(group_average_features)
 
@@ -389,13 +389,14 @@ class SelfSelectionNet(ResNetSelfAttention):
         self.attention = AttentionHeadV3(512, 128, 1)
         self.relu = nn.LeakyReLU()
         self.window_size = 10
+
     def forward(self, x, include_weights=False):
 
         H = self.backbone(x)
         H = self.adaptive_pooling(H)
         H = H.view(-1, 512 * 1 * 1)
-        groups = H.unfold(dimension=0, size=self.window_size, step=self.window_size).permute(0,2,1)
-        group_average_features = groups.mean(axis=1) # mean or max or highest abs value?
+        groups = H.unfold(dimension=0, size=self.window_size, step=self.window_size).permute(0, 2, 1)
+        group_average_features = groups.mean(axis=1)  # mean or max or highest abs value?
         group_attentions = self.attention(group_average_features)
 
         thresholded_attentions = self.relu(group_attentions)
@@ -417,3 +418,101 @@ class SelfSelectionNet(ResNetSelfAttention):
             return Y_prob, Y_hat, group_attentions, thresholded_attentions, attentions, A
         else:
             return Y_prob, Y_hat
+
+
+class TwoStageNet(nn.Module):
+
+    def __init__(self, instnorm=False):
+        super().__init__()
+
+        self.instnorm = instnorm
+
+        self.L = 512 * 1 * 1
+        self.D = 128
+        self.K = 1
+
+        self.adaptive_pooling = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)))
+        self.attention_head = AttentionHeadV3(self.L, self.D, self.K)
+
+        self.classifier = nn.Sequential(nn.Linear(self.L * self.K, 3))
+
+        if self.instnorm:
+            # load the resnet with instance norm instead of batch norm
+
+            model = resnet.ResNet(resnet.BasicBlock, [2, 2, 2, 2], norm_layer=MyGroupNorm)
+            sd = resnet18(weights=ResNet18_Weights.DEFAULT).state_dict()
+            model.load_state_dict(sd, strict=False)
+        else:
+
+            model = resnet18(weights=ResNet18_Weights.DEFAULT)
+
+        modules = list(model.children())[:-2]
+        self.backbone = nn.Sequential(*modules)
+        self.relu = nn.ReLU()
+    def disable_dropout(self):
+        for attention_head in self.attention_heads:
+            attention_head.eval()
+
+    def forward(self, x):
+
+        H = self.backbone(x)
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+
+        rois = self.attention_head(H)
+        rois = rois.view(1, -1)
+
+        rois_important = self.relu(rois)
+        rois_important = rois_important / rois_important.sum()
+
+        rois_non_important = self.relu(-1*rois)
+        rois_non_important = rois_non_important / rois_non_important.sum()
+
+        M_important = torch.mm(rois_important, H)
+        M_non_important = torch.mm(rois_non_important, H)
+
+        important_probs = self.classifier(M_important)
+        non_important_probs = self.classifier(M_non_important)
+
+        return important_probs, non_important_probs, rois
+
+
+class TwoStageNetSimple(TwoStageNet):
+
+    def __init__(self, instnorm=False):
+        super().__init__()
+
+    def forward(self, x, df):
+
+        H = self.backbone(x)
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1) # feature vectors from resnet18
+
+        rois = self.attention_head(H) # get attention scores for each vector
+        rois = rois.view(1, -1)
+
+        # find important slices from pre-calculated dataframe
+        df.loc[(df["kidney"] > 0) | (df["tumor"] > 0) | (df["cyst"] > 0), "important_all"] = 1
+        df["important_all"] = df["important_all"].fillna(0)
+
+        # categorize slice vectors by the dataframe
+        H_important = H[df["important_all"] == 1]
+        H_non_important = H[df["important_all"] == 0]
+
+        # categorize attention scores by the dataframe
+        rois_important = rois[df["important_all"] == 1]
+        rois_non_important = rois[df["important_all"] == 0]
+
+        # normalize attention scores
+        rois_important = rois_important / rois_important.sum()
+        rois_non_important = rois_non_important / rois_non_important.sum()
+
+        # aggregate together feature vectors, use attention scores as weights
+        M_important = torch.mm(rois_important, H_important)
+        M_non_important = torch.mm(rois_non_important, H_non_important)
+
+        # final classification
+        important_probs = self.classifier(M_important)
+        non_important_probs = self.classifier(M_non_important)
+
+        return important_probs, non_important_probs, rois

@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
-from utils import evaluate_attention
+from utils import evaluate_attention, prepare_statistics_dataframe
 
 
 def calculate_classification_error(Y, Y_hat):
@@ -34,7 +34,8 @@ class Trainer:
         self.scheduler = scheduler
         self.roll_slices = cfg.data.roll_slices
 
-        path = "/users/arivajoo/GPAI/slice_statistics/"
+        # path = "/users/arivajoo/GPAI/slice_statistics/"
+        path = "/gpfs/space/projects/BetterMedicine/joonas/kidney/slice_statistics/"
         self.train_statistics = pd.concat([pd.read_csv(path + "slice_info_kits_kirc_train.csv"),
                                            pd.read_csv(path + "slice_info_tuh_train.csv"),
                                            pd.read_csv(path + "slice_info_tuh_test_for_train.csv")])
@@ -94,28 +95,34 @@ class Trainer:
             data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
 
             data = data.to(self.device, dtype=torch.float16, non_blocking=True)
-            bag_label = bag_label.to(self.device, non_blocking=True)
+            bag_label = bag_label[0].to(self.device, non_blocking=True)
 
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
-
-                Y_prob, Y_hat, attention = model.forward(data)
+                print(self.train_statistics)
+                print(case_id[0])
+                df = prepare_statistics_dataframe(self.train_statistics if train else self.test_statistics, case_id[0],
+                                                  self.crop_size, self.nth_slice, self.roll_slices)
+                print(df)
+                important_probs, non_important_probs, rois = model.forward(data, df)
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
-                loss = self.loss_function(Y_prob, bag_label.float())
+                loss_cls = self.loss_function(important_probs, bag_label.long())
+                loss_roi = self.loss_function(non_important_probs, torch.Tensor([2]).long().cuda())
 
-                total_loss = loss
-
-                outputs.append(Y_hat.cpu())
+                total_loss = loss_cls + loss_roi
+                predictions = torch.argmax(important_probs, dim=-1).cpu()
+                outputs.append(predictions)
                 targets.append(bag_label.cpu())
 
                 # calculate attention accuracy
-                ap_all, ap_tumor = evaluate_attention(attention.cpu()[0],
+                ap_all, ap_tumor = evaluate_attention(rois.cpu()[0],
                                                       self.train_statistics if train else self.test_statistics,
                                                       case_id[0],
-                                                      self.crop_size, self.nth_slice, bag_label=bag_label, roll_slices=self.roll_slices)
+                                                      self.crop_size, self.nth_slice, bag_label=bag_label,
+                                                      roll_slices=self.roll_slices)
                 attention_scores["all_scans"][0].append(ap_all)
 
                 if bag_label:
@@ -123,7 +130,6 @@ class Trainer:
                     attention_scores["cases"][1].append(ap_tumor)
                 else:
                     attention_scores["controls"][0].append(ap_all)
-
 
             if train:
                 if (step) % 1 == 0 or (step) == len(data_loader):
@@ -138,9 +144,11 @@ class Trainer:
                     backprop_times.append(backprop_time)
 
             epoch_loss += total_loss.item()
-            class_loss += loss.item()
+            class_loss += total_loss.item()
 
-            error = calculate_classification_error(bag_label, Y_hat)
+            print("Test complete")
+
+            error = calculate_classification_error(bag_label.cpu(), predictions)
 
             epoch_error += error
 
