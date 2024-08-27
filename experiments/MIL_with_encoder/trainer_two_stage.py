@@ -16,7 +16,7 @@ from utils import evaluate_attention, prepare_statistics_dataframe
 
 def calculate_classification_error(Y, Y_hat):
     Y = Y.float()
-    error = 1. - Y_hat.eq(Y).cpu().float().mean().data.item()
+    error = 1. - Y_hat.eq(Y).float().mean().data.item()
 
     return error
 
@@ -33,6 +33,10 @@ class Trainer:
         self.steps_in_epoch = steps_in_epoch
         self.scheduler = scheduler
         self.roll_slices = cfg.data.roll_slices
+        if cfg.model.name == "twostagenet_simple":
+            self.simple = True
+        else:
+            self.simple = False
 
         # path = "/users/arivajoo/GPAI/slice_statistics/"
         path = "/gpfs/space/projects/BetterMedicine/joonas/kidney/slice_statistics/"
@@ -54,6 +58,7 @@ class Trainer:
         results = dict()
         epoch_loss = 0.
         class_loss = 0.
+        non_relevant_loss = 0.
         epoch_error = 0.
         step = 0
         nr_of_batches = len(data_loader)
@@ -100,10 +105,15 @@ class Trainer:
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
-                df = prepare_statistics_dataframe(self.train_statistics if train else self.test_statistics, case_id[0],
-                                                  self.crop_size, self.nth_slice, self.roll_slices)
+                if self.simple:
+                    df = prepare_statistics_dataframe(self.train_statistics if train else self.test_statistics,
+                                                      case_id[0],
+                                                      self.crop_size, self.nth_slice, self.roll_slices)
 
-                important_probs, non_important_probs, rois = model.forward(data, df)
+                    important_probs, non_important_probs, rois = model.forward(data, df)
+
+                else:
+                    important_probs, non_important_probs, rois = model.forward(data)
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
@@ -143,9 +153,8 @@ class Trainer:
                     backprop_times.append(backprop_time)
 
             epoch_loss += total_loss.item()
-            class_loss += total_loss.item()
-
-            print("Test complete")
+            class_loss += loss_cls.item()
+            non_relevant_loss += loss_roi.item()
 
             error = calculate_classification_error(bag_label.cpu(), predictions)
 
@@ -166,6 +175,7 @@ class Trainer:
         epoch_loss /= nr_of_batches
         epoch_error /= nr_of_batches
         class_loss /= nr_of_batches
+        non_relevant_loss /= nr_of_batches
 
         outputs = np.concatenate(outputs)
         targets = np.concatenate(targets)
@@ -184,11 +194,12 @@ class Trainer:
             '{}: loss: {:.4f}, enc error: {:.4f}, f1 macro score: {:.4f}'.format(
                 "Train" if train else "Validation", epoch_loss, epoch_error, f1))
         print(
-            f"Main classification loss: {round(class_loss, 3)}")
+            f"Main classification loss: {round(class_loss, 3)}, non_rel loss: {round(non_relevant_loss, 3)}")
 
         print(f"Attention mAP for kidney region all scans: {round(np.mean(attention_scores['all_scans'][0]), 3)}")
 
         results["classification_loss"] = class_loss
+        results["non_relevant_loss"] = non_relevant_loss
         results["epoch"] = epoch
         results["loss"] = epoch_loss
         results["error"] = epoch_error

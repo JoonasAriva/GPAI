@@ -60,11 +60,11 @@ class KidneyDataloader(torch.utils.data.Dataset):
         path = self.img_paths[index]
 
         # find scan id from path
-        print("path: ", path)
+
         match = path.split('/')[-1]
-        print("match: ", match)
+
         case_id = match.replace("_0000.nii",".nii")
-        print("case_id: ", case_id)
+
 
         x = nib.load(path).get_fdata()
 
