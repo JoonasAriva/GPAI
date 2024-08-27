@@ -99,11 +99,10 @@ class Trainer:
 
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
-                print(self.train_statistics)
-                print(case_id[0])
+
                 df = prepare_statistics_dataframe(self.train_statistics if train else self.test_statistics, case_id[0],
                                                   self.crop_size, self.nth_slice, self.roll_slices)
-                print(df)
+
                 important_probs, non_important_probs, rois = model.forward(data, df)
 
                 forward_time = time.time() - time_forward

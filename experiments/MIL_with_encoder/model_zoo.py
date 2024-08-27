@@ -492,16 +492,17 @@ class TwoStageNetSimple(TwoStageNet):
         rois = rois.view(1, -1)
 
         # find important slices from pre-calculated dataframe
+
         df.loc[(df["kidney"] > 0) | (df["tumor"] > 0) | (df["cyst"] > 0), "important_all"] = 1
         df["important_all"] = df["important_all"].fillna(0)
-
+        df.reset_index(inplace=True)
         # categorize slice vectors by the dataframe
         H_important = H[df["important_all"] == 1]
         H_non_important = H[df["important_all"] == 0]
 
         # categorize attention scores by the dataframe
-        rois_important = rois[df["important_all"] == 1]
-        rois_non_important = rois[df["important_all"] == 0]
+        rois_important = rois[:,df["important_all"] == 1]
+        rois_non_important = rois[:,df["important_all"] == 0]
 
         # normalize attention scores
         rois_important = rois_important / rois_important.sum()
