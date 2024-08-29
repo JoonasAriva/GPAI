@@ -13,7 +13,7 @@ training:
 
 model:
   classes: 3
-  name: twostagenet_simple
+  name: twostagenet
   pretrained_imagenet: True
   neighbour_range: 0
   num_heads: 1
@@ -26,6 +26,6 @@ data:
   plane: axial
   datasets: ['TUH_kidney']
   dataloader: kidney_real
-  crop_size: 302
+  crop_size: 300
   roll_slices: True
-check: True
+check: False

@@ -205,6 +205,7 @@ class ResNetSelfAttention2(nn.Module):
     def forward(self, x, include_weights=False):
 
         H = self.resnet_backbone(x)
+        print("H")
         H = torch.concat((self.cls_token, H), dim=0)
         H, weights = self.self_attention(H)
         CLS = torch.unsqueeze(H[0, :], dim=0)

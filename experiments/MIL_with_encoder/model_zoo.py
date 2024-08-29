@@ -456,6 +456,7 @@ class TwoStageNet(nn.Module):
     def forward(self, x):
 
         H = self.backbone(x)
+
         H = self.adaptive_pooling(H)
         H = H.view(-1, 512 * 1 * 1)
 

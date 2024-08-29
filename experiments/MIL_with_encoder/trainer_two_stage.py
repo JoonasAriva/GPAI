@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 from sklearn.metrics import f1_score
 from tqdm import tqdm
-
+import torch.nn as nn
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
 from utils import evaluate_attention, prepare_statistics_dataframe
@@ -20,6 +20,12 @@ def calculate_classification_error(Y, Y_hat):
 
     return error
 
+class TwoStageLoss(nn.Module):
+    def __init__(self):
+        super(TwoStageLoss, self).__init__()
+
+    def forward(self, roi_scores):
+        return torch.abs(1 + roi_scores.min()) +torch.abs(1 - roi_scores.max())
 
 class Trainer:
     def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None):
@@ -38,6 +44,11 @@ class Trainer:
         else:
             self.simple = False
 
+        if cfg.data.dataloader == "synthetic":
+            self.synthetic = True
+        else:
+            self.synthetic = False
+
         # path = "/users/arivajoo/GPAI/slice_statistics/"
         path = "/gpfs/space/projects/BetterMedicine/joonas/kidney/slice_statistics/"
         self.train_statistics = pd.concat([pd.read_csv(path + "slice_info_kits_kirc_train.csv"),
@@ -46,6 +57,8 @@ class Trainer:
 
         self.test_statistics = pd.concat([pd.read_csv(path + "slice_info_kits_kirc_test.csv"),
                                           pd.read_csv(path + "slice_info_tuh_test_for_test.csv")])
+
+        self.two_stage_loss = TwoStageLoss().cuda()
 
     def calculate_classification_error(self, Y, Y_hat):
         Y = Y.float()
@@ -58,6 +71,7 @@ class Trainer:
         results = dict()
         epoch_loss = 0.
         class_loss = 0.
+        polar_loss = 0
         non_relevant_loss = 0.
         epoch_error = 0.
         step = 0
@@ -119,26 +133,31 @@ class Trainer:
                 forward_times.append(forward_time)
 
                 loss_cls = self.loss_function(important_probs, bag_label.long())
-                loss_roi = self.loss_function(non_important_probs, torch.Tensor([2]).long().cuda())
-
-                total_loss = loss_cls + loss_roi
+                loss_polar = self.two_stage_loss(rois)
+                total_loss = loss_cls + loss_polar
+                if not non_important_probs.isnan().any():
+                    loss_roi = self.loss_function(non_important_probs, torch.Tensor([2]).long().cuda())
+                    total_loss += loss_roi
+                else:
+                    loss_roi = 0
                 predictions = torch.argmax(important_probs, dim=-1).cpu()
                 outputs.append(predictions)
                 targets.append(bag_label.cpu())
 
-                # calculate attention accuracy
-                ap_all, ap_tumor = evaluate_attention(rois.cpu()[0],
-                                                      self.train_statistics if train else self.test_statistics,
-                                                      case_id[0],
-                                                      self.crop_size, self.nth_slice, bag_label=bag_label,
-                                                      roll_slices=self.roll_slices)
-                attention_scores["all_scans"][0].append(ap_all)
+                if not self.synthetic:
+                    # calculate attention accuracy
+                    ap_all, ap_tumor = evaluate_attention(rois.cpu()[0],
+                                                          self.train_statistics if train else self.test_statistics,
+                                                          case_id[0],
+                                                          self.crop_size, self.nth_slice, bag_label=bag_label,
+                                                          roll_slices=self.roll_slices)
+                    attention_scores["all_scans"][0].append(ap_all)
 
-                if bag_label:
-                    attention_scores["cases"][0].append(ap_all)
-                    attention_scores["cases"][1].append(ap_tumor)
-                else:
-                    attention_scores["controls"][0].append(ap_all)
+                    if bag_label:
+                        attention_scores["cases"][0].append(ap_all)
+                        attention_scores["cases"][1].append(ap_tumor)
+                    else:
+                        attention_scores["controls"][0].append(ap_all)
 
             if train:
                 if (step) % 1 == 0 or (step) == len(data_loader):
@@ -154,7 +173,9 @@ class Trainer:
 
             epoch_loss += total_loss.item()
             class_loss += loss_cls.item()
-            non_relevant_loss += loss_roi.item()
+            polar_loss += loss_polar.item()
+            if not non_important_probs.isnan().any():
+                non_relevant_loss += loss_roi.item()
 
             error = calculate_classification_error(bag_label.cpu(), predictions)
 
@@ -176,16 +197,18 @@ class Trainer:
         epoch_error /= nr_of_batches
         class_loss /= nr_of_batches
         non_relevant_loss /= nr_of_batches
+        polar_loss /= nr_of_batches
 
         outputs = np.concatenate(outputs)
         targets = np.concatenate(targets)
 
         f1 = f1_score(targets, outputs, average='macro')
 
-        results["attention_map_all_scans_full_kidney"] = np.mean(attention_scores["all_scans"][0])
-        results["attention_map_cases_full_kidney"] = np.mean(attention_scores["cases"][0])
-        results["attention_map_cases_tumor"] = np.mean(attention_scores["cases"][1])
-        results["attention_map_controls_full_kidney"] = np.mean(attention_scores["controls"][0])
+        if not self.synthetic:
+            results["attention_map_all_scans_full_kidney"] = np.mean(attention_scores["all_scans"][0])
+            results["attention_map_cases_full_kidney"] = np.mean(attention_scores["cases"][0])
+            results["attention_map_cases_tumor"] = np.mean(attention_scores["cases"][1])
+            results["attention_map_controls_full_kidney"] = np.mean(attention_scores["controls"][0])
 
         print("data speed: ", round(np.mean(data_times), 3), "forward speed ", round(np.mean(forward_times), 3),
               "backprop speed: ", round(np.mean(backprop_times), 3))
@@ -194,9 +217,10 @@ class Trainer:
             '{}: loss: {:.4f}, enc error: {:.4f}, f1 macro score: {:.4f}'.format(
                 "Train" if train else "Validation", epoch_loss, epoch_error, f1))
         print(
-            f"Main classification loss: {round(class_loss, 3)}, non_rel loss: {round(non_relevant_loss, 3)}")
+            f"Main classification loss: {round(class_loss, 3)}, non_rel loss: {round(non_relevant_loss, 3)}, polar loss: {round(polar_loss, 3)}")
 
-        print(f"Attention mAP for kidney region all scans: {round(np.mean(attention_scores['all_scans'][0]), 3)}")
+        if not self.synthetic:
+            print(f"Attention mAP for kidney region all scans: {round(np.mean(attention_scores['all_scans'][0]), 3)}")
 
         results["classification_loss"] = class_loss
         results["non_relevant_loss"] = non_relevant_loss
@@ -204,5 +228,6 @@ class Trainer:
         results["loss"] = epoch_loss
         results["error"] = epoch_error
         results["f1_score"] = f1
+        results["polar_loss"] = polar_loss
 
         return results

@@ -32,6 +32,7 @@ np.seterr(divide='ignore', invalid='ignore')
 os.environ["WANDB__SERVICE_WAIT"] = "300"
 
 
+
 @hydra.main(config_path="config", config_name="config", version_base='1.1')
 def main(cfg: DictConfig):
     print(OmegaConf.to_yaml(cfg))
@@ -72,7 +73,7 @@ def main(cfg: DictConfig):
     number_of_epochs = 50
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=number_of_epochs * steps_in_epoch,
                                               pct_start=0.2, max_lr=cfg.training.learning_rate)
-    #loss_function = torch.nn.BCEWithLogitsLoss().cuda()
+    # loss_function = torch.nn.BCEWithLogitsLoss().cuda()
     loss_function = torch.nn.CrossEntropyLoss().cuda()
     trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                       steps_in_epoch=steps_in_epoch)
@@ -100,7 +101,7 @@ def main(cfg: DictConfig):
         test_results = {k + '_test': v for k, v in test_results.items()}
 
         test_f1 = test_results["f1_score_test"]
-        test_attention = test_results["attention_map_cases_full_kidney_test"]
+        # test_attention = test_results["attention_map_cases_full_kidney_test"]
 
         epoch_results.update(train_results)
         epoch_results.update(test_results)
@@ -109,11 +110,12 @@ def main(cfg: DictConfig):
             logging.info("Model check completed")
             return
 
-        if test_attention > best_test_attention:
-            best_test_attention = test_attention
-            logging.info(f"Best new attention at epoch {epoch} (highest mAp on cases on full kidney region)!")
-            Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
-            torch.save(model.state_dict(), str(dir_checkpoint / 'best_attention.pth'))
+        Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
+        # if test_attention > best_test_attention:
+        #     best_test_attention = test_attention
+        #     logging.info(f"Best new attention at epoch {epoch} (highest mAp on cases on full kidney region)!")
+        #
+        #     torch.save(model.state_dict(), str(dir_checkpoint / 'best_attention.pth'))
         if test_f1 > best_f1:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), str(dir_checkpoint / 'best_model.pth'))
