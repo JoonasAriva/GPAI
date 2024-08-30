@@ -140,7 +140,7 @@ class Trainer:
                     total_loss += loss_roi
                 else:
                     loss_roi = 0
-                predictions = torch.argmax(important_probs, dim=-1).cpu()
+                predictions = torch.argmax(important_probs[:2], dim=-1).cpu() # we do not care for non-relevant class for f1 calculation
                 outputs.append(predictions)
                 targets.append(bag_label.cpu())
 

@@ -433,7 +433,7 @@ class TwoStageNet(nn.Module):
 
         self.adaptive_pooling = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)))
         self.attention_head = AttentionHeadV3(self.L, self.D, self.K)
-
+        self.important_head = AttentionHeadV3(self.L, self.D, self.K)
         self.classifier = nn.Sequential(nn.Linear(self.L * self.K, 3))
 
         if self.instnorm:
@@ -469,8 +469,13 @@ class TwoStageNet(nn.Module):
         rois_non_important = self.relu(-1*rois)
         rois_non_important = rois_non_important / rois_non_important.sum()
 
-        M_important = torch.mm(rois_important, H)
+        important_slices_attention = self.important_head(H)
+        important_slices_attention = important_slices_attention.view(1, -1)
+        important_slices_attention = important_slices_attention * rois_important
+        important_slices_attention = important_slices_attention / important_slices_attention.abs().sum()
+
         M_non_important = torch.mm(rois_non_important, H)
+        M_important = torch.mm(important_slices_attention, H)
 
         important_probs = self.classifier(M_important)
         non_important_probs = self.classifier(M_non_important)
