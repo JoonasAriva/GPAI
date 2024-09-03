@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
-from utils import evaluate_attention
+from utils import evaluate_attention, prepare_statistics_dataframe
 
 
 def calculate_classification_error(Y, Y_hat):
@@ -33,8 +33,9 @@ class Trainer:
         self.steps_in_epoch = steps_in_epoch
         self.scheduler = scheduler
         self.roll_slices = cfg.data.roll_slices
-
-        path = "/users/arivajoo/GPAI/slice_statistics/"
+        self.important_slices_only = cfg.data.important_slices_only
+        # path = "/users/arivajoo/GPAI/slice_statistics/"
+        path = "/gpfs/space/projects/BetterMedicine/joonas/kidney/slice_statistics/"
         self.train_statistics = pd.concat([pd.read_csv(path + "slice_info_kits_kirc_train.csv"),
                                            pd.read_csv(path + "slice_info_tuh_train.csv"),
                                            pd.read_csv(path + "slice_info_tuh_test_for_train.csv")])
@@ -99,6 +100,16 @@ class Trainer:
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
+                if self.important_slices_only:
+                    df = prepare_statistics_dataframe(self.train_statistics if train else self.test_statistics,
+                                                      case_id[0],
+                                                      self.crop_size, self.nth_slice, self.roll_slices)
+                    df.loc[(df["kidney"] > 0) | (df["tumor"] > 0) | (df["cyst"] > 0), "important_all"] = 1
+                    df["important_all"] = df["important_all"].fillna(0)
+                    df.reset_index(inplace=True)
+                    # categorize slice vectors by the dataframe
+                    data = data[df["important_all"] == 1]
+                    #print("after filtering: ",data.shape)
                 Y_prob, Y_hat, attention = model.forward(data)
 
                 forward_time = time.time() - time_forward
@@ -112,18 +123,17 @@ class Trainer:
                 targets.append(bag_label.cpu())
 
                 # calculate attention accuracy
-                ap_all, ap_tumor = evaluate_attention(attention.cpu()[0],
-                                                      self.train_statistics if train else self.test_statistics,
-                                                      case_id[0],
-                                                      self.crop_size, self.nth_slice, bag_label=bag_label, roll_slices=self.roll_slices)
-                attention_scores["all_scans"][0].append(ap_all)
-
-                if bag_label:
-                    attention_scores["cases"][0].append(ap_all)
-                    attention_scores["cases"][1].append(ap_tumor)
-                else:
-                    attention_scores["controls"][0].append(ap_all)
-
+                # ap_all, ap_tumor = evaluate_attention(attention.cpu()[0],
+                # self.train_statistics if train else self.test_statistics,
+                # case_id[0],
+                # self.crop_size, self.nth_slice, bag_label=bag_label, roll_slices=self.roll_slices)
+                # attention_scores["all_scans"][0].append(ap_all)
+                #
+                # if bag_label:
+                #     attention_scores["cases"][0].append(ap_all)
+                #     attention_scores["cases"][1].append(ap_tumor)
+                # else:
+                #     attention_scores["controls"][0].append(ap_all)
 
             if train:
                 if (step) % 1 == 0 or (step) == len(data_loader):
@@ -165,10 +175,10 @@ class Trainer:
 
         f1 = f1_score(targets, outputs, average='macro')
 
-        results["attention_map_all_scans_full_kidney"] = np.mean(attention_scores["all_scans"][0])
-        results["attention_map_cases_full_kidney"] = np.mean(attention_scores["cases"][0])
-        results["attention_map_cases_tumor"] = np.mean(attention_scores["cases"][1])
-        results["attention_map_controls_full_kidney"] = np.mean(attention_scores["controls"][0])
+        # results["attention_map_all_scans_full_kidney"] = np.mean(attention_scores["all_scans"][0])
+        # results["attention_map_cases_full_kidney"] = np.mean(attention_scores["cases"][0])
+        # results["attention_map_cases_tumor"] = np.mean(attention_scores["cases"][1])
+        # results["attention_map_controls_full_kidney"] = np.mean(attention_scores["controls"][0])
 
         print("data speed: ", round(np.mean(data_times), 3), "forward speed ", round(np.mean(forward_times), 3),
               "backprop speed: ", round(np.mean(backprop_times), 3))
@@ -179,7 +189,7 @@ class Trainer:
         print(
             f"Main classification loss: {round(class_loss, 3)}")
 
-        print(f"Attention mAP for kidney region all scans: {round(np.mean(attention_scores['all_scans'][0]), 3)}")
+        # print(f"Attention mAP for kidney region all scans: {round(np.mean(attention_scores['all_scans'][0]), 3)}")
 
         results["classification_loss"] = class_loss
         results["epoch"] = epoch

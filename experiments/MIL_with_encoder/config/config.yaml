@@ -13,7 +13,7 @@ training:
 
 model:
   classes: 3
-  name: twostagenet
+  name: resnet18V3
   pretrained_imagenet: True
   neighbour_range: 0
   num_heads: 1
@@ -28,4 +28,5 @@ data:
   dataloader: kidney_real
   crop_size: 300
   roll_slices: True
+  important_slices_only: True
 check: False

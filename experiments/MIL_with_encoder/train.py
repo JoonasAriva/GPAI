@@ -18,7 +18,7 @@ from omegaconf import OmegaConf, DictConfig
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
 
-from trainer_two_stage import Trainer
+from trainer import Trainer
 
 from utils import prepare_dataloader, pick_model
 
@@ -73,8 +73,8 @@ def main(cfg: DictConfig):
     number_of_epochs = 50
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=number_of_epochs * steps_in_epoch,
                                               pct_start=0.2, max_lr=cfg.training.learning_rate)
-    # loss_function = torch.nn.BCEWithLogitsLoss().cuda()
-    loss_function = torch.nn.CrossEntropyLoss().cuda()
+    loss_function = torch.nn.BCEWithLogitsLoss().cuda()
+    #loss_function = torch.nn.CrossEntropyLoss().cuda()
     trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                       steps_in_epoch=steps_in_epoch)
 
