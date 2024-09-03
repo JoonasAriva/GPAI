@@ -119,7 +119,7 @@ class ResNetAttentionV3(nn.Module):
 
 class SelfAttention(nn.Module):
 
-    def __init__(self, embed_dim: int, num_heads: int):
+    def __init__(self, embed_dim: int, num_heads: int, attention_masking: bool = False, keep_neighbours: int = 0):
         super().__init__()
         self.embed_dim = embed_dim
         self.num_heads = num_heads
@@ -127,6 +127,16 @@ class SelfAttention(nn.Module):
         self.project_qkv = nn.Linear(embed_dim, embed_dim * 3)
         self.softmax = nn.Softmax(dim=-1)
         self.proj_out = nn.Linear(embed_dim, embed_dim)
+        self.keep_neighbours = keep_neighbours
+        self.attention_masking = attention_masking
+
+    def create_mask(self, matrix_size: int, unmasked_neighbours: int):
+        a = torch.zeros(matrix_size, matrix_size)
+        a = torch.diagonal_scatter(a, torch.ones(matrix_size), 0)
+        for i in range(unmasked_neighbours):
+            a = torch.diagonal_scatter(a, torch.ones(matrix_size - i - 1), 1 + i)
+            a = torch.diagonal_scatter(a, torch.ones(matrix_size - i - 1), -1 - i)
+        return a
 
     def head_partition(self, x: T):
         return einops.rearrange(x, 's (h d) -> h s d', h=self.num_heads)
@@ -139,8 +149,10 @@ class SelfAttention(nn.Module):
         q, k, v = map(self.head_partition, (q, k, v))
 
         attn_scores = q @ k.transpose(-1, -2) * self.scale
+        if self.attention_masking:
+            mask = self.create_mask(attn_scores.size()[0], unmasked_neighbours=self.keep_neighbours)
+            attn_scores[~mask.bool()] = -10e9
         attn_weights = self.softmax(attn_scores)
-        # print("attn weights shape: ", attn_weights.shape)
         out = attn_weights @ v
         out = self.head_merging(out)
         out = self.proj_out(out)
@@ -449,6 +461,7 @@ class TwoStageNet(nn.Module):
         modules = list(model.children())[:-2]
         self.backbone = nn.Sequential(*modules)
         self.relu = nn.ReLU()
+
     def disable_dropout(self):
         for attention_head in self.attention_heads:
             attention_head.eval()
@@ -463,19 +476,11 @@ class TwoStageNet(nn.Module):
         rois = self.attention_head(H)
         rois = rois.view(1, -1)
 
-        rois_important = self.relu(rois)
-        rois_important = rois_important / rois_important.sum()
+        rois_important = F.softmax(rois, dim=1)
+        rois_non_important = F.softmax(-1 * rois, dim=1)
 
-        rois_non_important = self.relu(-1*rois)
-        rois_non_important = rois_non_important / rois_non_important.sum()
-
-        important_slices_attention = self.important_head(H)
-        important_slices_attention = important_slices_attention.view(1, -1)
-        important_slices_attention = important_slices_attention * rois_important
-        important_slices_attention = important_slices_attention / important_slices_attention.abs().sum()
-
+        M_important = torch.mm(rois_important, H)
         M_non_important = torch.mm(rois_non_important, H)
-        M_important = torch.mm(important_slices_attention, H)
 
         important_probs = self.classifier(M_important)
         non_important_probs = self.classifier(M_non_important)
@@ -489,12 +494,11 @@ class TwoStageNetSimple(TwoStageNet):
         super().__init__()
 
     def forward(self, x, df):
-
         H = self.backbone(x)
         H = self.adaptive_pooling(H)
-        H = H.view(-1, 512 * 1 * 1) # feature vectors from resnet18
+        H = H.view(-1, 512 * 1 * 1)  # feature vectors from resnet18
 
-        rois = self.attention_head(H) # get attention scores for each vector
+        rois = self.attention_head(H)  # get attention scores for each vector
         rois = rois.view(1, -1)
 
         # find important slices from pre-calculated dataframe
@@ -507,8 +511,8 @@ class TwoStageNetSimple(TwoStageNet):
         H_non_important = H[df["important_all"] == 0]
 
         # categorize attention scores by the dataframe
-        rois_important = rois[:,df["important_all"] == 1]
-        rois_non_important = rois[:,df["important_all"] == 0]
+        rois_important = rois[:, df["important_all"] == 1]
+        rois_non_important = rois[:, df["important_all"] == 0]
 
         # normalize attention scores
         rois_important = rois_important / rois_important.sum()
