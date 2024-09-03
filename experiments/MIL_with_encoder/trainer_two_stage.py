@@ -27,7 +27,7 @@ class TwoStageLoss(nn.Module):
     def forward(self, roi_scores):
         return torch.abs(1 + roi_scores.min()) +torch.abs(1 - roi_scores.max())
 
-class Trainer:
+class TrainerTwoStage:
     def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None):
 
         self.check = cfg.check
