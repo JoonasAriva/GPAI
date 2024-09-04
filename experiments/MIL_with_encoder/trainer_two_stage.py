@@ -9,6 +9,7 @@ import torch
 from sklearn.metrics import f1_score
 from tqdm import tqdm
 import torch.nn as nn
+
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
 from utils import evaluate_attention, prepare_statistics_dataframe
@@ -20,12 +21,14 @@ def calculate_classification_error(Y, Y_hat):
 
     return error
 
+
 class TwoStageLoss(nn.Module):
     def __init__(self):
         super(TwoStageLoss, self).__init__()
 
     def forward(self, roi_scores):
-        return torch.abs(1 + roi_scores.min()) +torch.abs(1 - roi_scores.max())
+        return torch.abs(1 + roi_scores.min()) + torch.abs(1 - roi_scores.max())
+
 
 class TrainerTwoStage:
     def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None):
@@ -99,8 +102,9 @@ class TrainerTwoStage:
         attention_scores["cases"] = [[], []]
         attention_scores["controls"] = [[], []]
         time_data = time.time()
-        for data, bag_label, case_id in tepoch:
+        for data, bag_label, meta in tepoch:
 
+            (case_id, nth_slice) = meta
             if self.check:
                 print("data shape: ", data.shape)
 
@@ -122,7 +126,7 @@ class TrainerTwoStage:
                 if self.simple:
                     df = prepare_statistics_dataframe(self.train_statistics if train else self.test_statistics,
                                                       case_id[0],
-                                                      self.crop_size, self.nth_slice, self.roll_slices)
+                                                      self.crop_size, nth_slice, self.roll_slices)
 
                     important_probs, non_important_probs, rois = model.forward(data, df)
 
@@ -140,7 +144,8 @@ class TrainerTwoStage:
                     total_loss += loss_roi
                 else:
                     loss_roi = 0
-                predictions = torch.argmax(important_probs[:2], dim=-1).cpu() # we do not care for non-relevant class for f1 calculation
+                predictions = torch.argmax(important_probs[:2],
+                                           dim=-1).cpu()  # we do not care for non-relevant class for f1 calculation
                 outputs.append(predictions)
                 targets.append(bag_label.cpu())
 

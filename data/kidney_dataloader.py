@@ -128,4 +128,4 @@ class KidneyDataloader(torch.utils.data.Dataset):
                 x = tio.Resize((int(512 * w / h), 512, d))(x)
         # x = x.as_tensor()
 
-        return x, y, case_id
+        return x, y, (case_id, nth_slice)
