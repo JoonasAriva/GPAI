@@ -24,7 +24,6 @@ data:
   take_every_nth_slice: 3
   data_augmentations: True
   plane: axial
-  datasets: ['TUH_kidney']
   dataloader: kidney_real
   crop_size: 302
   roll_slices: True

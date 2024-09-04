@@ -150,13 +150,15 @@ class SelfAttention(nn.Module):
 
         attn_scores = q @ k.transpose(-1, -2) * self.scale
         if self.attention_masking:
-            mask = self.create_mask(attn_scores.size()[0], unmasked_neighbours=self.keep_neighbours)
-            attn_scores[~mask.bool()] = -10e9
+            MASKING_VALUE = -1e+10 if attn_scores.dtype == torch.float32 else -1e+4
+            mask = self.create_mask(attn_scores.size()[-1], unmasked_neighbours=self.keep_neighbours)
+            mask = torch.unsqueeze(mask, dim = 0)
+            attn_scores[~mask.bool()] = MASKING_VALUE
         attn_weights = self.softmax(attn_scores)
         out = attn_weights @ v
         out = self.head_merging(out)
         out = self.proj_out(out)
-        return out, attn_scores
+        return out, attn_weights
 
 
 class ResNetSelfAttention(nn.Module):
@@ -460,7 +462,7 @@ class TwoStageNet(nn.Module):
 
         modules = list(model.children())[:-2]
         self.backbone = nn.Sequential(*modules)
-        self.relu = nn.ReLU()
+
 
     def disable_dropout(self):
         for attention_head in self.attention_heads:
@@ -476,6 +478,35 @@ class TwoStageNet(nn.Module):
         rois = self.attention_head(H)
         rois = rois.view(1, -1)
 
+        rois_important = F.softmax(10*rois, dim=1)
+        rois_non_important = F.softmax(-10 * rois, dim=1)
+
+        M_important = torch.mm(rois_important, H)
+        M_non_important = torch.mm(rois_non_important, H)
+
+        important_probs = self.classifier(M_important)
+        non_important_probs = self.classifier(M_non_important)
+
+        return important_probs, non_important_probs, rois
+
+
+class TwoStageNetMaskedAttention(TwoStageNet):
+    def __init__(self, instnorm=False):
+        super().__init__()
+        self.self_attention = SelfAttention(embed_dim=512, num_heads=1,attention_masking=True, keep_neighbours=3)
+
+
+    def forward(self, x):
+
+        H = self.backbone(x)
+
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+
+        H, attn_weights = self.self_attention(H)
+        rois = self.attention_head(H)
+        rois = rois.view(1, -1)
+
         rois_important = F.softmax(rois, dim=1)
         rois_non_important = F.softmax(-1 * rois, dim=1)
 
@@ -486,6 +517,7 @@ class TwoStageNet(nn.Module):
         non_important_probs = self.classifier(M_non_important)
 
         return important_probs, non_important_probs, rois
+
 
 
 class TwoStageNetSimple(TwoStageNet):

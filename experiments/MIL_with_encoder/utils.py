@@ -11,7 +11,7 @@ from data.kidney_dataloader import KidneyDataloader
 from data.synth_dataloaders import SynthDataloader
 
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
-    ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple
+    ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention
 
 import re
 
@@ -85,6 +85,8 @@ def pick_model(cfg: DictConfig):
         model = TwoStageNet(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'twostagenet_simple':
         model = TwoStageNetSimple(instnorm=cfg.model.inst_norm)
+    elif cfg.model.name == 'twostagenet_masked':
+        model = TwoStageNetMaskedAttention(instnorm=cfg.model.inst_norm)
 
     return model
 
