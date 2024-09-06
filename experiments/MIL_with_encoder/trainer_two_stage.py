@@ -105,6 +105,7 @@ class TrainerTwoStage:
         for data, bag_label, meta in tepoch:
 
             (case_id, nth_slice) = meta
+            nth_slice = nth_slice.item()
             if self.check:
                 print("data shape: ", data.shape)
 
@@ -154,7 +155,7 @@ class TrainerTwoStage:
                     ap_all, ap_tumor = evaluate_attention(rois.cpu()[0],
                                                           self.train_statistics if train else self.test_statistics,
                                                           case_id[0],
-                                                          self.crop_size, self.nth_slice, bag_label=bag_label,
+                                                          self.crop_size, nth_slice, bag_label=bag_label,
                                                           roll_slices=self.roll_slices)
                     attention_scores["all_scans"][0].append(ap_all)
 

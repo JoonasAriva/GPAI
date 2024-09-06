@@ -57,7 +57,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
             return nth_slice
 
         if nr_of_original_slices / nth_slice < 50:
-            self.pick_sample_frequency(nr_of_original_slices, nth_slice-1)
+            return self.pick_sample_frequency(nr_of_original_slices, nth_slice-1)
         else:
             return nth_slice
     def __len__(self):
@@ -84,6 +84,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
         nr_of_original_slices = x.shape[-1]
 
         nth_slice = self.pick_sample_frequency(nr_of_original_slices, self.nth_slice)
+
         x = x[:, :, ::nth_slice]  # sample slices
         x = np.expand_dims(x, 0)  # needed for cropper
         x = self.center_cropper(x).as_tensor()
