@@ -21,11 +21,11 @@ model:
   nr_of_blocks: 2
 
 data:
-  take_every_nth_slice: 3
+  take_every_nth_slice: 1
   data_augmentations: True
   plane: axial
-  dataloader: kidney_real
-  crop_size: 302
+  dataloader: synthetic
+  crop_size: 200
   roll_slices: True
   important_slices_only: False
 check: False

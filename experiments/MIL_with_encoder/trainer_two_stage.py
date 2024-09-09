@@ -122,7 +122,7 @@ class TrainerTwoStage:
             bag_label = bag_label[0].to(self.device, non_blocking=True)
 
             time_forward = time.time()
-            with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
+            with torch.cuda.amp.autocast(), torch.autograd.set_detect_anomaly(True), torch.no_grad() if not train else nullcontext():
 
                 if self.simple:
                     df = prepare_statistics_dataframe(self.train_statistics if train else self.test_statistics,

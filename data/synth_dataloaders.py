@@ -92,8 +92,10 @@ class SynthDataloader(torch.utils.data.Dataset):
                 path = "train/"
             else:
                 path = "test/"
-            # /gpfs/space/home/joonas97/GPAI/data/preloaded_synth_data/
-            data_pos = glob.glob('/scratch/project_465001111/preloaded_synth_data/' + path + "pos/*.pt")[
+
+            #platform_path = '/scratch/project_465001111/preloaded_synth_data/'
+            platform_path =  '/gpfs/helios/home/joonas97/GPAI/data/preloaded_synth_data/'
+            data_pos = glob.glob(platform_path + path + "pos/*.pt")[
                        :length]
             data_neg = glob.glob('/scratch/project_465001111/preloaded_synth_data/' + path + "neg/*.pt")[
                        :length]
@@ -232,4 +234,4 @@ class SynthDataloader(torch.utils.data.Dataset):
         if self.return_meta:
             return x, y, self.coordinates[index]
         else:
-            return x, y, "no_path"
+            return x, y, ("no_path", 1)

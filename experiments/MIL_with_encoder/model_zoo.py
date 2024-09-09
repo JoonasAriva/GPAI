@@ -152,7 +152,7 @@ class SelfAttention(nn.Module):
         if self.attention_masking:
             MASKING_VALUE = -1e+10 if attn_scores.dtype == torch.float32 else -1e+4
             mask = self.create_mask(attn_scores.size()[-1], unmasked_neighbours=self.keep_neighbours)
-            mask = torch.unsqueeze(mask, dim = 0)
+            mask = torch.unsqueeze(mask, dim=0)
             attn_scores[~mask.bool()] = MASKING_VALUE
         attn_weights = self.softmax(attn_scores)
         out = attn_weights @ v
@@ -463,6 +463,7 @@ class TwoStageNet(nn.Module):
         modules = list(model.children())[:-2]
         self.backbone = nn.Sequential(*modules)
 
+        self.relu = nn.ReLU(inplace=False)
 
     def disable_dropout(self):
         for attention_head in self.attention_heads:
@@ -478,8 +479,22 @@ class TwoStageNet(nn.Module):
         rois = self.attention_head(H)
         rois = rois.view(1, -1)
 
-        rois_important = F.softmax(10*rois, dim=1)
-        rois_non_important = F.softmax(-10 * rois, dim=1)
+        rois_important = self.relu(rois)
+        rois_non_important = self.relu(-1 * rois)
+
+        MASKING_VALUE = -1e+10 if rois.dtype == torch.float32 else -1e+4
+
+        mask_important = rois_important == 0
+        mask_non_important = rois_non_important == 0
+
+        rois_important = torch.where(mask_important, torch.tensor(MASKING_VALUE, device=rois.device, dtype=rois.dtype),
+                                     rois_important)
+        rois_non_important = torch.where(mask_non_important,
+                                         torch.tensor(MASKING_VALUE, device=rois.device, dtype=rois.dtype),
+                                         rois_non_important)
+
+        rois_important = F.softmax(rois_important, dim=1)
+        rois_non_important = F.softmax(rois_non_important, dim=1)
 
         M_important = torch.mm(rois_important, H)
         M_non_important = torch.mm(rois_non_important, H)
@@ -493,11 +508,9 @@ class TwoStageNet(nn.Module):
 class TwoStageNetMaskedAttention(TwoStageNet):
     def __init__(self, instnorm=False):
         super().__init__()
-        self.self_attention = SelfAttention(embed_dim=512, num_heads=1,attention_masking=True, keep_neighbours=3)
-
+        self.self_attention = SelfAttention(embed_dim=512, num_heads=1, attention_masking=True, keep_neighbours=3)
 
     def forward(self, x):
-
         H = self.backbone(x)
 
         H = self.adaptive_pooling(H)
@@ -517,7 +530,6 @@ class TwoStageNetMaskedAttention(TwoStageNet):
         non_important_probs = self.classifier(M_non_important)
 
         return important_probs, non_important_probs, rois
-
 
 
 class TwoStageNetSimple(TwoStageNet):
