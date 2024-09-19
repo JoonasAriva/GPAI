@@ -194,8 +194,8 @@ def normalize_scan(x, single_channel=False, model_type="2D"):
 
 def get_kidney_datasets(type: str):
     # type = train, test
-    base_path = '/gpfs/space/projects/BetterMedicine/joonas/'  # hpc
-    #base_path = '/project/project_465001111/ct_data/'  # lumi
+    #base_path = '/gpfs/space/projects/BetterMedicine/joonas/'  # hpc
+    base_path = '/project/project_465001111/ct_data/'  # lumi
     tuh_train_data_path = base_path + 'kidney/tuh_train/'
     tuh_test_data_path = base_path + 'kidney/tuh_test/'
     # ts_data_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/total_segmentor'

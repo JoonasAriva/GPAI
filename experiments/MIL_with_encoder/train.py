@@ -20,6 +20,8 @@ sys.path.append('/users/arivajoo/GPAI')
 
 from trainer_two_stage import TrainerTwoStage
 from trainer import Trainer
+from trainer_multi_two_stage import TrainerTwoStageMulti
+from trainer_two_stage_two_heads import TrainerTwoStageTwoHeads
 from utils import prepare_dataloader, pick_model
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
@@ -30,7 +32,6 @@ dir_checkpoint = Path('./checkpoints/')
 np.seterr(divide='ignore', invalid='ignore')
 
 os.environ["WANDB__SERVICE_WAIT"] = "300"
-
 
 
 @hydra.main(config_path="config", config_name="config", version_base='1.1')
@@ -51,7 +52,7 @@ def main(cfg: DictConfig):
     if cfg.data.dataloader == "kidney_real":
         steps_in_epoch = 500
         proj_name = "MIL_encoder_24"
-    elif cfg.data.dataloader == "synthetic":
+    elif cfg.data.dataloader == "synthetic" or "kidney_synth":
         steps_in_epoch = 500
         proj_name = "MIL_encoder_synth24"
 
@@ -76,14 +77,21 @@ def main(cfg: DictConfig):
 
     if "twostage" in cfg.model.name:
         loss_function = torch.nn.CrossEntropyLoss().cuda()
-        trainer = TrainerTwoStage(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
-                          steps_in_epoch=steps_in_epoch)
+        if "multi" in cfg.model.name:
+            trainer = TrainerTwoStageMulti(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function,
+                                           cfg=cfg,
+                                           steps_in_epoch=steps_in_epoch)
+        elif "two_heads" in cfg.model.name:
+            loss_function = torch.nn.BCEWithLogitsLoss().cuda()
+            trainer = TrainerTwoStageTwoHeads(optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                                              steps_in_epoch=steps_in_epoch)
+        else:
+            trainer = TrainerTwoStage(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                                      steps_in_epoch=steps_in_epoch)
     else:
         loss_function = torch.nn.BCEWithLogitsLoss().cuda()
         trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                           steps_in_epoch=steps_in_epoch)
-
-
 
     if not cfg.check:
         experiment = wandb.init(project=proj_name, anonymous='must')
@@ -137,6 +145,7 @@ def main(cfg: DictConfig):
                 logging.info("Model has not improved for the last 20 epochs, stopping training")
                 break
             not_improved_epochs += 1
+
         experiment.log(epoch_results)
         torch.save(model.state_dict(), str(dir_checkpoint / 'current_model.pth'))
 

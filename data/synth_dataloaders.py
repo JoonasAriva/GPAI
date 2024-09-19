@@ -97,7 +97,7 @@ class SynthDataloader(torch.utils.data.Dataset):
             platform_path =  '/gpfs/helios/home/joonas97/GPAI/data/preloaded_synth_data/'
             data_pos = glob.glob(platform_path + path + "pos/*.pt")[
                        :length]
-            data_neg = glob.glob('/scratch/project_465001111/preloaded_synth_data/' + path + "neg/*.pt")[
+            data_neg = glob.glob(platform_path + path + "neg/*.pt")[
                        :length]
             #print('/scratch/project_465001111/preloaded_synth_data/' + path + "neg/*.pt")
             #print(data_pos)

@@ -502,8 +502,109 @@ class TwoStageNet(nn.Module):
         important_probs = self.classifier(M_important)
         non_important_probs = self.classifier(M_non_important)
 
-        return important_probs, non_important_probs, rois
+        return important_probs, non_important_probs, rois, H
 
+
+class TwoStageNetTwoHeads(TwoStageNet):
+    def __init__(self, instnorm=False):
+        super().__init__()
+        self.tumor_classifier = nn.Linear(self.L * self.K, 1)
+        self.relevancy_classifier = nn.Linear(self.L * self.K, 1)
+
+    def forward(self, x):
+
+        H = self.backbone(x)
+
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+
+        rois = self.attention_head(H)
+        rois = rois.view(1, -1)
+
+        rois_important = self.relu(rois)
+        rois_non_important = self.relu(-1 * rois)
+
+        MASKING_VALUE = -1e+10 if rois.dtype == torch.float32 else -1e+4
+
+        mask_important = rois_important == 0
+        mask_non_important = rois_non_important == 0
+
+        rois_important = torch.where(mask_important, torch.tensor(MASKING_VALUE, device=rois.device, dtype=rois.dtype),
+                                     rois_important)
+        rois_non_important = torch.where(mask_non_important,
+                                         torch.tensor(MASKING_VALUE, device=rois.device, dtype=rois.dtype),
+                                         rois_non_important)
+
+        rois_important = F.softmax(rois_important, dim=1)
+        rois_non_important = F.softmax(rois_non_important, dim=1)
+
+        M_important = torch.mm(rois_important, H)
+        M_non_important = torch.mm(rois_non_important, H)
+
+        important_tumor_probs = self.tumor_classifier(M_important)
+
+        non_important_relevancy_probs = self.relevancy_classifier(M_non_important)
+        important_relevancy_probs = self.relevancy_classifier(M_important)
+
+        return important_tumor_probs, non_important_relevancy_probs, important_relevancy_probs, rois
+
+
+class TwoStageNetTwoHeadsV2(TwoStageNet):
+    def __init__(self, instnorm=False):
+        super().__init__()
+        self.tumor_classifier = nn.Linear(self.L * self.K, 1)
+        self.relevancy_classifier = nn.Linear(self.L * self.K, 1)
+
+        self.attention_head = AttentionHeadV3(self.L, self.D, self.K)
+        self.roi_head = AttentionHeadV3(self.L, self.D, self.K)
+
+    def forward(self, x):
+
+        H = self.backbone(x)
+
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+
+        rois = self.roi_head(H)
+        rois = rois.view(1, -1)
+
+        rois_important = self.relu(rois)
+        rois_non_important = self.relu(-1 * rois)
+
+        MASKING_VALUE = -1e+10 if rois.dtype == torch.float32 else -1e+4
+
+        mask_important = rois_important == 0
+        mask_non_important = rois_non_important == 0
+
+        rois_non_important = torch.where(mask_non_important,
+                                         torch.tensor(MASKING_VALUE, device=rois.device, dtype=rois.dtype),
+                                         rois_non_important)
+
+        rois_important = torch.where(mask_important,
+                                         torch.tensor(MASKING_VALUE, device=rois.device, dtype=rois.dtype),
+                                         rois_non_important)
+
+
+        rois_non_important = F.softmax(rois_non_important, dim=1)
+
+        attention = self.attention_head(H).view(1, -1)
+        attention = torch.where(mask_important, torch.tensor(MASKING_VALUE, device=rois.device, dtype=rois.dtype),
+                                     attention)
+
+        attention = F.softmax(attention, dim=1)
+
+        M_important = torch.mm(attention, H)
+        M_non_important_rel = torch.mm(rois_non_important, H)
+
+        important_tumor_probs = self.tumor_classifier(M_important)
+
+        rois_important = F.softmax(rois_important, dim=1)
+        M_important_rel = torch.mm(rois_important, H)
+
+        non_important_relevancy_probs = self.relevancy_classifier(M_non_important_rel)
+        important_relevancy_probs = self.relevancy_classifier(M_important_rel)
+
+        return important_tumor_probs, non_important_relevancy_probs, important_relevancy_probs, rois
 
 class TwoStageNetMaskedAttention(TwoStageNet):
     def __init__(self, instnorm=False):
@@ -531,6 +632,55 @@ class TwoStageNetMaskedAttention(TwoStageNet):
 
         return important_probs, non_important_probs, rois
 
+
+class MultiHeadTwoStageNet(TwoStageNet):
+    def __init__(self, instnorm=False):
+        super().__init__()
+
+        self.all_slices_head = AttentionHeadV3(self.L, self.D, self.K)
+        self.all_slices_classifier = nn.Linear(self.L * self.K, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        H = self.backbone(x)
+
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+
+        rois = self.attention_head(H)
+        rois = rois.view(1, -1)
+
+        rois_important = self.relu(rois)
+        rois_non_important = self.relu(-1 * rois)
+
+        MASKING_VALUE = -1e+10 if rois.dtype == torch.float32 else -1e+4
+
+        mask_important = rois_important == 0
+        mask_non_important = rois_non_important == 0
+
+        rois_important = torch.where(mask_important, torch.tensor(MASKING_VALUE, device=rois.device, dtype=rois.dtype),
+                                     rois_important)
+        rois_non_important = torch.where(mask_non_important,
+                                         torch.tensor(MASKING_VALUE, device=rois.device, dtype=rois.dtype),
+                                         rois_non_important)
+
+        rois_important = F.softmax(rois_important, dim=1)
+        rois_non_important = F.softmax(rois_non_important, dim=1)
+
+        M_important = torch.mm(rois_important, H)
+        M_non_important = torch.mm(rois_non_important, H)
+
+        important_probs = self.classifier(M_important)
+        non_important_probs = self.classifier(M_non_important)
+
+        attention = self.all_slices_head(H)
+        A = F.softmax(attention, dim=1).T
+        M = torch.mm(A, H)
+        logits = self.all_slices_classifier(M)
+        Y_hat = self.sigmoid(logits)
+        Y_hat = torch.ge(Y_hat, 0.5).float()
+
+        return important_probs, non_important_probs, rois, logits, Y_hat, attention
 
 class TwoStageNetSimple(TwoStageNet):
 
@@ -571,3 +721,47 @@ class TwoStageNetSimple(TwoStageNet):
         non_important_probs = self.classifier(M_non_important)
 
         return important_probs, non_important_probs, rois
+
+class TransMIL(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+        self.adaptive_pooling = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)))
+
+        self.classifier = nn.Sequential(nn.Linear(512, 1))
+        self.sig = nn.Sigmoid()
+
+
+        model = resnet.ResNet(resnet.BasicBlock, [2, 2, 2, 2], norm_layer=MyGroupNorm)
+        sd = resnet18(weights=ResNet18_Weights.DEFAULT).state_dict()
+        model.load_state_dict(sd, strict=False)
+
+        modules = list(model.children())[:-2]
+        self.backbone = nn.Sequential(*modules)
+
+        self.self_attention1 = SelfAttention(embed_dim=512, num_heads=8)
+        self.self_attention2 = SelfAttention(embed_dim=512, num_heads=8)
+        self.norm1 = nn.LayerNorm(512)
+        self.norm2 = nn.LayerNorm(512)
+        self.norm3 = nn.LayerNorm(512)
+        self.cls_token = nn.Parameter(torch.zeros(1, 512))
+        torch.nn.init.trunc_normal_(self.cls_token)
+
+    def forward(self, x):
+
+        H = self.backbone(x)
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+
+        H = torch.concat((self.cls_token, H), dim=0)
+
+        H = H + self.self_attention1(self.norm1(H))[0]
+        H = H + self.self_attention2(self.norm2(H))[0]
+        CLS = torch.unsqueeze(self.norm3(H)[0, :], dim=0)
+
+        Y_prob = self.classifier(CLS)
+        Y_hat = self.sig(Y_prob)
+        Y_hat = torch.ge(Y_hat, 0.5).float()
+
+        return Y_prob, Y_hat

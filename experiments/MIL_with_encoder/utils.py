@@ -11,7 +11,8 @@ from data.kidney_dataloader import KidneyDataloader
 from data.synth_dataloaders import SynthDataloader
 
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
-    ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention
+    ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention, \
+    MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL
 
 import re
 
@@ -21,14 +22,15 @@ from sklearn.metrics import average_precision_score
 
 
 def prepare_dataloader(cfg: DictConfig):
-    if cfg.data.dataloader == "kidney_real":
+    if "kidney" in cfg.data.dataloader:
         transforms = tio.Compose(
             [tio.RandomFlip(axes=(0, 1)),
              tio.RandomAffine(scales=(1, 1.2), degrees=(0, 0, 10), translation=(50, 50, 0))])
         dataloader_params = {
             'only_every_nth_slice': cfg.data.take_every_nth_slice, 'as_rgb': True,
             'plane': 'axial', 'center_crop': cfg.data.crop_size, 'downsample': False,
-            'roll_slices': cfg.data.roll_slices}
+            'roll_slices': cfg.data.roll_slices,
+            'generate_spheres': True if cfg.data.dataloader == 'kidney_synth' else False}
         train_dataset = KidneyDataloader(type="train",
                                          augmentations=None if not cfg.data.data_augmentations else transforms,
                                          **dataloader_params)
@@ -87,7 +89,14 @@ def pick_model(cfg: DictConfig):
         model = TwoStageNetSimple(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'twostagenet_masked':
         model = TwoStageNetMaskedAttention(instnorm=cfg.model.inst_norm)
-
+    elif cfg.model.name == 'twostagenet_multi':
+        model = MultiHeadTwoStageNet(instnorm=cfg.model.inst_norm)
+    elif cfg.model.name == 'twostagenet_two_heads':
+        model = TwoStageNetTwoHeads(instnorm=cfg.model.inst_norm)
+    elif cfg.model.name == 'twostagenet_two_headsV2':
+        model = TwoStageNetTwoHeads(instnorm=cfg.model.inst_norm)
+    elif cfg.model.name == 'transmil':
+        model = TransMIL()
     return model
 
 
@@ -132,6 +141,7 @@ def center_crop_dataframe(df, crop_size):
         df.reset_index(inplace=True)
     return df
 
+
 def prepare_statistics_dataframe(df, case_id, crop_size, nth_slice, roll_slices):
     scan_df = df.loc[df["file_name"] == case_id].copy()[::nth_slice]
 
@@ -139,6 +149,7 @@ def prepare_statistics_dataframe(df, case_id, crop_size, nth_slice, roll_slices)
     if roll_slices:
         cropped_scan_df = cropped_scan_df[1:-1].copy()
     return cropped_scan_df
+
 
 def evaluate_attention(attention, df, case_id, crop_size, nth_slice, bag_label, roll_slices):
     cropped_scan_df = prepare_statistics_dataframe(df, case_id, crop_size, nth_slice, roll_slices)
