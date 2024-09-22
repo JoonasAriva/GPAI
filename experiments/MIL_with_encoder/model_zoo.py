@@ -114,7 +114,7 @@ class ResNetAttentionV3(nn.Module):
         Y_hat = self.sig(Y_prob)
         Y_hat = torch.ge(Y_hat, 0.5).float()
 
-        return Y_prob, Y_hat, unnorm_A
+        return Y_prob, Y_hat
 
 
 class SelfAttention(nn.Module):
@@ -145,7 +145,9 @@ class SelfAttention(nn.Module):
         return einops.rearrange(x, 'h s d -> s (h d)')
 
     def forward(self, x: T):
+
         q, k, v = self.project_qkv(x).chunk(3, dim=-1)
+
         q, k, v = map(self.head_partition, (q, k, v))
 
         attn_scores = q @ k.transpose(-1, -2) * self.scale
@@ -158,7 +160,7 @@ class SelfAttention(nn.Module):
         out = attn_weights @ v
         out = self.head_merging(out)
         out = self.proj_out(out)
-        return out, attn_weights
+        return out, attn_scores
 
 
 class ResNetSelfAttention(nn.Module):
@@ -757,11 +759,12 @@ class TransMIL(nn.Module):
         H = torch.concat((self.cls_token, H), dim=0)
 
         H = H + self.self_attention1(self.norm1(H))[0]
-        H = H + self.self_attention2(self.norm2(H))[0]
+        H_out, weights = self.self_attention2(self.norm2(H))
+        H = H_out + H
         CLS = torch.unsqueeze(self.norm3(H)[0, :], dim=0)
 
         Y_prob = self.classifier(CLS)
         Y_hat = self.sig(Y_prob)
         Y_hat = torch.ge(Y_hat, 0.5).float()
 
-        return Y_prob, Y_hat
+        return Y_prob, Y_hat, H_out, weights

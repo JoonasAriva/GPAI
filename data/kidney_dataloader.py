@@ -9,7 +9,7 @@ import re
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
 sys.path.append('/users/arivajoo/GPAI/data')
-from data_utils import get_kidney_datasets, set_orientation, downsample_scan, normalize_scan, remove_table_3d
+from data_utils import get_kidney_datasets, set_orientation, downsample_scan, normalize_scan, remove_table_3d, remove_empty_tiles
 
 
 
@@ -39,7 +39,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
     def __init__(self, only_every_nth_slice: int = 1, type: str = "train", downsample: bool = False,
                  augmentations: callable = None, as_rgb: bool = False,
                  sample_shifting: bool = False, plane: str = 'axial',
-                 center_crop: int = 120, roll_slices=False, model_type="2D", generate_spheres: bool = False):
+                 center_crop: int = 120, roll_slices=False, model_type="2D", generate_spheres: bool = False, patchify: bool = False, patch_size : int = 128):
         super().__init__()
         self.roll_slices = roll_slices
         self.as_rgb = as_rgb
@@ -51,6 +51,8 @@ class KidneyDataloader(torch.utils.data.Dataset):
         self.model_type = model_type
         self.generate_spheres = generate_spheres
         self.type = type
+        self.patchify = patchify
+        self.patch_size = patch_size
 
         if roll_slices:
             center_crop = center_crop
@@ -103,7 +105,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
 
             sphere_mask = np.logical_xor(sphere_mask, hole_mask)
 
-        gaussian_noise_circle = torch.FloatTensor(np.random.randn(*scan.shape) * 20 + 190)
+        gaussian_noise_circle = torch.FloatTensor(np.random.randn(*scan.shape) * 20 + 210)
         scan[sphere_mask] = gaussian_noise_circle[sphere_mask]
         return scan
 
@@ -126,7 +128,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
 
         if self.downsample:
             x = downsample_scan(x)
-        print("y: ", y)
+
         if self.generate_spheres:
             if self.type == "test":
                 synth_coords = self.synth_data[index]
@@ -182,5 +184,11 @@ class KidneyDataloader(torch.utils.data.Dataset):
             else:
                 x = tio.Resize((int(512 * w / h), 512, d))(x)
         # x = x.as_tensor()
+
+        if self.patchify:
+            patches = torch.Tensor(x).unfold(1, 128, 128).unfold(2, 128, 128)
+            patches = patches.reshape(3, -1, 128, 128)
+            x = torch.permute(patches, (0, 2, 3, 1))
+            x = remove_empty_tiles(x)
 
         return x, y, (case_id, nth_slice)

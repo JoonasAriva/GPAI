@@ -180,6 +180,21 @@ def normalize_scan(x, single_channel=False, model_type="2D"):
         # norm_x = np.squeeze(norm_x)
         return norm_x
 
+def remove_empty_tiles(data):
+    #3, 128, 128, 1520
+    # find minimum values per patch
+    min_per_row = torch.min(data, dim=1)[0]  # Shape becomes [100, 512]
+    min_per_channel = torch.min(min_per_row, dim=1)[0]
+    min_values = torch.min(min_per_channel, dim=0)[0]
+
+    mask = data < min_values + 0.05 # filter out pixels with small values
+    small_vals = torch.sum(mask, dim=(0, 1, 2))
+    all_vals = data.shape[:3].numel()
+    relative_percentage_of_small_vals = small_vals / all_vals
+    filter_mask = relative_percentage_of_small_vals > 0.4
+
+    filtered_data = data[:, :, :, ~filter_mask]
+    return filtered_data
 
 # def custom_highlight_function(x, segmentation):
 #

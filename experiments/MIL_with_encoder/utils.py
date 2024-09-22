@@ -30,7 +30,7 @@ def prepare_dataloader(cfg: DictConfig):
             'only_every_nth_slice': cfg.data.take_every_nth_slice, 'as_rgb': True,
             'plane': 'axial', 'center_crop': cfg.data.crop_size, 'downsample': False,
             'roll_slices': cfg.data.roll_slices,
-            'generate_spheres': True if cfg.data.dataloader == 'kidney_synth' else False}
+            'generate_spheres': True if cfg.data.dataloader == 'kidney_synth' else False, 'patchify': cfg.data.patchify}
         train_dataset = KidneyDataloader(type="train",
                                          augmentations=None if not cfg.data.data_augmentations else transforms,
                                          **dataloader_params)
