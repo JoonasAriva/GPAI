@@ -161,12 +161,14 @@ def downsample_scan(x, scale_factor=0.5):
     return x
 
 
-def normalize_scan(x, single_channel=False, model_type="2D"):
+def normalize_scan(x, single_channel=False, model_type="2D", remove_bones=False):
     if single_channel:
         xy_dims = (0, 1)
     else:
         xy_dims = (1, 2)
 
+    if remove_bones:
+        x[np.where(x > 300)] = -150
     clipped_x = np.clip(x, -150, 250)  # soft tissue window
 
     if model_type == "2D":

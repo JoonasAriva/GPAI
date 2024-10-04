@@ -110,7 +110,7 @@ class Trainer:
                     # categorize slice vectors by the dataframe
                     data = data[df["important_all"] == 1]
                     #print("after filtering: ",data.shape)
-                Y_prob, Y_hat = model.forward(data)
+                Y_prob, Y_hat, attention = model.forward(data)
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
@@ -136,7 +136,7 @@ class Trainer:
                 #     attention_scores["controls"][0].append(ap_all)
 
             if train:
-                if (step) % 1 == 0 or (step) == len(data_loader):
+                if (step) % 2 == 0 or (step) == len(data_loader):
                     time_backprop = time.time()
                     scaler.scale(total_loss).backward()
                     scaler.step(self.optimizer)

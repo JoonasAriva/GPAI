@@ -108,7 +108,7 @@ class TrainerTwoStageMulti:
         time_data = time.time()
         for data, bag_label, meta in tepoch:
 
-            (case_id, nth_slice) = meta
+            (case_id, nth_slice, scan) = meta
             nth_slice = nth_slice.item()
             if self.check:
                 print("data shape: ", data.shape)

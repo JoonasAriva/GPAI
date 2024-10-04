@@ -9,8 +9,8 @@ import re
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
 sys.path.append('/users/arivajoo/GPAI/data')
-from data_utils import get_kidney_datasets, set_orientation, downsample_scan, normalize_scan, remove_table_3d, remove_empty_tiles
-
+from data_utils import get_kidney_datasets, set_orientation, downsample_scan, normalize_scan, remove_table_3d, \
+    remove_empty_tiles
 
 
 def make_single_sphere_coords():
@@ -23,7 +23,9 @@ def make_single_sphere_coords():
                                        synth_coords["xyz"][1] + np.random.uniform(-0.02, 0.02), \
                                        synth_coords["xyz"][2] + np.random.uniform(-0.02, 0.02)
     return synth_coords
-def make_sphere_coords(img_paths,labels, deterministic: bool = True):
+
+
+def make_sphere_coords(img_paths, labels, deterministic: bool = True):
     synth_data = []
     if deterministic:
         np.random.seed(555)
@@ -35,11 +37,13 @@ def make_sphere_coords(img_paths,labels, deterministic: bool = True):
 
     return synth_data
 
+
 class KidneyDataloader(torch.utils.data.Dataset):
     def __init__(self, only_every_nth_slice: int = 1, type: str = "train", downsample: bool = False,
                  augmentations: callable = None, as_rgb: bool = False,
                  sample_shifting: bool = False, plane: str = 'axial',
-                 center_crop: int = 120, roll_slices=False, model_type="2D", generate_spheres: bool = False, patchify: bool = False, patch_size : int = 128):
+                 center_crop: int = 120, roll_slices=False, model_type="2D", generate_spheres: bool = False,
+                 patchify: bool = False, patch_size: int = 128):
         super().__init__()
         self.roll_slices = roll_slices
         self.as_rgb = as_rgb
@@ -80,8 +84,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
         self.classes = ["control", "tumor"]
 
         if self.generate_spheres:
-            self.synth_data = make_sphere_coords(self.img_paths, self.labels,deterministic = True)
-
+            self.synth_data = make_sphere_coords(self.img_paths, self.labels, deterministic=True)
 
     def pick_sample_frequency(self, nr_of_original_slices: int, nth_slice: int):
 
@@ -98,7 +101,6 @@ class KidneyDataloader(torch.utils.data.Dataset):
         x, y, z = synth_coords["xyz"]
         sphere_mask = rg.sphere(scan.shape, radius, (x, y, z))
         if add_hole:
-
             cx, cy, cz = synth_coords["circ_in_circ_xyz"]
             hole_radius = synth_coords["circ_in_circ_radius"]
             hole_mask = rg.sphere(scan.shape, hole_radius, (cx, cy, cz))
@@ -134,7 +136,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
                 synth_coords = self.synth_data[index]
                 x = self.add_synth_tumor(x, synth_coords, add_hole=y)
             elif self.type == "train":
-                synth_coords =make_single_sphere_coords()
+                synth_coords = make_single_sphere_coords()
                 y = torch.Tensor([np.random.choice(a=[False, True])])
                 x = self.add_synth_tumor(x, synth_coords, add_hole=y)
 
@@ -147,8 +149,6 @@ class KidneyDataloader(torch.utils.data.Dataset):
         x = self.center_cropper(x).as_tensor()
         x = np.squeeze(x)
         w, h, d = x.shape
-
-
 
         x = np.clip(x, -1024, None)
         # x = remove_table_3d(x)
@@ -176,7 +176,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
                 for i in range(x.shape[2]):
                     x[:, :, i] = self.augmentations(np.expand_dims(x[:, :, i], 0))
 
-        x = normalize_scan(x, single_channel=not self.as_rgb, model_type=self.model_type)
+        x = normalize_scan(x, single_channel=not self.as_rgb, model_type=self.model_type, remove_bones=False)
 
         if w < 512 or h < 512:
             if w >= h:
@@ -186,9 +186,29 @@ class KidneyDataloader(torch.utils.data.Dataset):
         # x = x.as_tensor()
 
         if self.patchify:
-            patches = torch.Tensor(x).unfold(1, 128, 128).unfold(2, 128, 128)
-            patches = patches.reshape(3, -1, 128, 128)
-            x = torch.permute(patches, (0, 2, 3, 1))
-            x = remove_empty_tiles(x)
+            x = torch.Tensor(x)
 
-        return x, y, (case_id, nth_slice)
+            if self.type == "train":
+                shift_x , shift_y = np.random.choice([0,-64,64]), np.random.choice([0,-64,64])
+                x = torch.roll(x, shifts=(shift_x, shift_y), dims=(1, 2))
+            patches = x.unfold(1, 150, 128).unfold(2, 150, 128)
+
+            last_fold1 = torch.permute(x[:, -150:, :, :].unfold(2, 150, 128), (0, 2, 3, 1, 4)).reshape(3, -1, 150, 150)
+
+            #last_fold2 = x[:, :, -150:, :].unfold(1, 150, 128)
+
+            #last_fold2 = torch.permute(last_fold2, (0, 1, 3, 4, 2))
+
+            #last_fold2 = last_fold2.reshape(3, -1, 150, 150)
+
+            last_fold2 = torch.permute(x[:, :, -150:, :].unfold(1, 150, 128), (0, 1, 3, 4, 2)).reshape(3, -1, 150, 150)
+
+            last_fold3 = torch.permute(x[:, -150:, -150:, :], (0, 3, 1, 2)).reshape(3, -1, 150, 150)
+            patches = patches.reshape(3, -1, 150, 150)
+
+            patches_final = torch.cat((patches, last_fold1, last_fold2, last_fold3), dim=1)
+            patches_final = torch.permute(patches_final, (0, 2, 3, 1))
+            return patches_final, y, (case_id, nth_slice, x)
+            #x = remove_empty_tiles(x)
+
+        return x, y,(case_id, nth_slice)

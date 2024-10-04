@@ -114,7 +114,7 @@ class ResNetAttentionV3(nn.Module):
         Y_hat = self.sig(Y_prob)
         Y_hat = torch.ge(Y_hat, 0.5).float()
 
-        return Y_prob, Y_hat
+        return Y_prob, Y_hat, unnorm_A
 
 
 class SelfAttention(nn.Module):

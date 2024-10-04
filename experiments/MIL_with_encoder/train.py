@@ -71,7 +71,7 @@ def main(cfg: DictConfig):
     optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
                            weight_decay=cfg.training.weight_decay)
 
-    number_of_epochs = 50
+    number_of_epochs = cfg.training.epochs
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=number_of_epochs * steps_in_epoch,
                                               pct_start=0.2, max_lr=cfg.training.learning_rate)
 
@@ -143,11 +143,13 @@ def main(cfg: DictConfig):
         else:
             if not_improved_epochs > 20:
                 logging.info("Model has not improved for the last 20 epochs, stopping training")
-                break
+                #break
             not_improved_epochs += 1
 
         experiment.log(epoch_results)
         torch.save(model.state_dict(), str(dir_checkpoint / 'current_model.pth'))
+        torch.save(optimizer.state_dict(), str(dir_checkpoint / 'current_optimizer.pth'))
+        torch.save(scheduler.state_dict(), str(dir_checkpoint / 'current_scheduler.pth'))
 
     torch.save(model.state_dict(), str(dir_checkpoint / 'last_model.pth'))
     logging.info(f'Last checkpoint! Checkpoint {epoch} saved!')
