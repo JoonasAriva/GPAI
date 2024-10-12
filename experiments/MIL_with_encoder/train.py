@@ -9,7 +9,6 @@ import hydra
 import numpy as np
 import torch
 import torch.optim as optim
-
 import wandb
 from omegaconf import OmegaConf, DictConfig
 
@@ -50,12 +49,10 @@ def main(cfg: DictConfig):
 
     train_loader, test_loader = prepare_dataloader(cfg)
     if cfg.data.dataloader == "kidney_real":
-        steps_in_epoch = 500
         proj_name = "MIL_encoder_24"
     elif cfg.data.dataloader == "synthetic" or "kidney_synth":
-        steps_in_epoch = 500
         proj_name = "MIL_encoder_synth24"
-
+    steps_in_epoch = 500
     logging.info('Init Model')
     model = pick_model(cfg)
 
@@ -72,7 +69,8 @@ def main(cfg: DictConfig):
                            weight_decay=cfg.training.weight_decay)
 
     number_of_epochs = cfg.training.epochs
-    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=number_of_epochs * steps_in_epoch,
+    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=int(
+        number_of_epochs * steps_in_epoch / cfg.training.weight_update_freq),
                                               pct_start=0.2, max_lr=cfg.training.learning_rate)
 
     if "twostage" in cfg.model.name:
@@ -143,7 +141,7 @@ def main(cfg: DictConfig):
         else:
             if not_improved_epochs > 20:
                 logging.info("Model has not improved for the last 20 epochs, stopping training")
-                #break
+                # break
             not_improved_epochs += 1
 
         experiment.log(epoch_results)

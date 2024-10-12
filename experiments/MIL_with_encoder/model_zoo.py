@@ -606,7 +606,7 @@ class TwoStageNetTwoHeadsV2(TwoStageNet):
         non_important_relevancy_probs = self.relevancy_classifier(M_non_important_rel)
         important_relevancy_probs = self.relevancy_classifier(M_important_rel)
 
-        return important_tumor_probs, non_important_relevancy_probs, important_relevancy_probs, rois
+        return important_tumor_probs, non_important_relevancy_probs, important_relevancy_probs, rois, attention
 
 class TwoStageNetMaskedAttention(TwoStageNet):
     def __init__(self, instnorm=False):

@@ -6,13 +6,13 @@ from contextlib import nullcontext
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 from sklearn.metrics import f1_score
 from tqdm import tqdm
-import torch.nn as nn
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
-from utils import evaluate_attention, prepare_statistics_dataframe
+from utils import prepare_statistics_dataframe
 
 
 def calculate_classification_error(Y, Y_hat):
@@ -28,8 +28,6 @@ class TwoStageLoss(nn.Module):
 
     def forward(self, roi_scores):
         return torch.abs(1 + roi_scores.min()) + torch.abs(1 - roi_scores.max())
-
-
 
 
 class TrainerTwoStageTwoHeads:
@@ -55,7 +53,7 @@ class TrainerTwoStageTwoHeads:
             self.synthetic = False
 
         path = "/users/arivajoo/GPAI/slice_statistics/"
-        #path = "/gpfs/space/projects/BetterMedicine/joonas/kidney/slice_statistics/"
+        # path = "/gpfs/space/projects/BetterMedicine/joonas/kidney/slice_statistics/"
         self.train_statistics = pd.concat([pd.read_csv(path + "slice_info_kits_kirc_train.csv"),
                                            pd.read_csv(path + "slice_info_tuh_train.csv"),
                                            pd.read_csv(path + "slice_info_tuh_test_for_train.csv")])
@@ -106,7 +104,7 @@ class TrainerTwoStageTwoHeads:
         time_data = time.time()
         for data, bag_label, meta in tepoch:
 
-            (case_id, nth_slice) = meta
+            case_id, nth_slice = meta[0], meta[1]
             nth_slice = nth_slice.item()
             if self.check:
                 print("data shape: ", data.shape)
@@ -124,7 +122,8 @@ class TrainerTwoStageTwoHeads:
             bag_label = bag_label.to(self.device, non_blocking=True)
 
             time_forward = time.time()
-            with torch.cuda.amp.autocast(), torch.autograd.set_detect_anomaly(True), torch.no_grad() if not train else nullcontext():
+            with torch.cuda.amp.autocast(), torch.autograd.set_detect_anomaly(
+                    True), torch.no_grad() if not train else nullcontext():
 
                 if self.simple:
                     df = prepare_statistics_dataframe(self.train_statistics if train else self.test_statistics,
@@ -134,22 +133,25 @@ class TrainerTwoStageTwoHeads:
                     important_probs, non_important_probs, rois = model.forward(data, df)
 
                 else:
-                    important_tumor_probs, non_important_relevancy_probs, important_relevancy_probs, rois = model.forward(data)
+                    important_tumor_probs, non_important_relevancy_probs, important_relevancy_probs, rois = model.forward(
+                        data)
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
                 loss_tumor = self.loss_function(important_tumor_probs, bag_label.float())
-                loss_relevancy_important = self.loss_function(important_relevancy_probs, torch.Tensor([[1]]).float().cuda())
+                loss_relevancy_important = self.loss_function(important_relevancy_probs,
+                                                              torch.Tensor([[1]]).float().cuda())
 
                 loss_polar = self.two_stage_loss(rois)
 
                 if not non_important_relevancy_probs.isnan().any():
-                    loss_relevancy_non = self.loss_function(non_important_relevancy_probs, torch.Tensor([[0]]).float().cuda())
+                    loss_relevancy_non = self.loss_function(non_important_relevancy_probs,
+                                                            torch.Tensor([[0]]).float().cuda())
                 else:
                     loss_relevancy_non = 0
 
-                total_loss = loss_tumor + loss_polar + 0.1*loss_relevancy_important + 0.1*loss_relevancy_non
+                total_loss = loss_tumor + loss_polar + 0.25 * loss_relevancy_important + 0.25 * loss_relevancy_non
 
                 prediction = nn.Sigmoid()(important_tumor_probs)
                 prediction = torch.ge(prediction, 0.5).float().cpu()
@@ -157,23 +159,23 @@ class TrainerTwoStageTwoHeads:
                 outputs.append(prediction)
                 targets.append(bag_label.cpu())
 
-                if not self.synthetic:
-                    # calculate attention accuracy
-                    ap_all, ap_tumor = evaluate_attention(rois.cpu()[0],
-                                                          self.train_statistics if train else self.test_statistics,
-                                                          case_id[0],
-                                                          self.crop_size, nth_slice, bag_label=bag_label,
-                                                          roll_slices=self.roll_slices)
-                    attention_scores["all_scans"][0].append(ap_all)
-
-                    if bag_label:
-                        attention_scores["cases"][0].append(ap_all)
-                        attention_scores["cases"][1].append(ap_tumor)
-                    else:
-                        attention_scores["controls"][0].append(ap_all)
+                # if not self.synthetic:
+                #     # calculate attention accuracy
+                #     ap_all, ap_tumor = evaluate_attention(rois.cpu()[0],
+                #                                           self.train_statistics if train else self.test_statistics,
+                #                                           case_id[0],
+                #                                           self.crop_size, nth_slice, bag_label=bag_label,
+                #                                           roll_slices=self.roll_slices)
+                #     attention_scores["all_scans"][0].append(ap_all)
+                #
+                #     if bag_label:
+                #         attention_scores["cases"][0].append(ap_all)
+                #         attention_scores["cases"][1].append(ap_tumor)
+                #     else:
+                #         attention_scores["controls"][0].append(ap_all)
 
             if train:
-                if (step) % 1 == 0 or (step) == len(data_loader):
+                if (step) % 2 == 0 or (step) == len(data_loader):
                     time_backprop = time.time()
                     scaler.scale(total_loss).backward()
                     scaler.step(self.optimizer)
@@ -219,11 +221,11 @@ class TrainerTwoStageTwoHeads:
 
         f1 = f1_score(targets, outputs, average='macro')
 
-        if not self.synthetic:
-            results["attention_map_all_scans_full_kidney"] = np.mean(attention_scores["all_scans"][0])
-            results["attention_map_cases_full_kidney"] = np.mean(attention_scores["cases"][0])
-            results["attention_map_cases_tumor"] = np.mean(attention_scores["cases"][1])
-            results["attention_map_controls_full_kidney"] = np.mean(attention_scores["controls"][0])
+        # if not self.synthetic:
+        #     results["attention_map_all_scans_full_kidney"] = np.mean(attention_scores["all_scans"][0])
+        #     results["attention_map_cases_full_kidney"] = np.mean(attention_scores["cases"][0])
+        #     results["attention_map_cases_tumor"] = np.mean(attention_scores["cases"][1])
+        #     results["attention_map_controls_full_kidney"] = np.mean(attention_scores["controls"][0])
 
         print("data speed: ", round(np.mean(data_times), 3), "forward speed ", round(np.mean(forward_times), 3),
               "backprop speed: ", round(np.mean(backprop_times), 3))

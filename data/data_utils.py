@@ -209,18 +209,21 @@ def remove_empty_tiles(data):
 #     return x
 
 
-def get_kidney_datasets(type: str):
+def get_kidney_datasets(type: str, no_lungs: bool= False):
     # type = train, test
     #base_path = '/gpfs/space/projects/BetterMedicine/joonas/'  # hpc
-    base_path = '/project/project_465001111/ct_data/'  # lumi
+
+    if no_lungs:
+        base_path = '/scratch/project_465001111/ct_data/'
+    else:
+        base_path = '/project/project_465001111/ct_data/'  # lumi
+
     tuh_train_data_path = base_path + 'kidney/tuh_train/'
     tuh_test_data_path = base_path + 'kidney/tuh_test/'
-    # ts_data_path = '/gpfs/space/projects/BetterMedicine/joonas/kidney/total_segmentor'
     other_datasets_path = base_path + 'kidney/data'
 
     all_controls = []
     all_tumors = []
-    #
     # tuh
     for data_path in [tuh_train_data_path, tuh_test_data_path]:
         control_path = data_path + 'controls/images/' + type + '/*nii.gz'
@@ -232,15 +235,7 @@ def get_kidney_datasets(type: str):
         all_controls.extend(control)
         all_tumors.extend(tumor)
 
-    # total segmentor
-    # control_path = ts_data_path + '/ts_controls/images/*nii.gz'
-    # tumor_path = ts_data_path + '/ts_tumors/images/*nii.gz'
-    # control = glob.glob(control_path)
-    # tumor = glob.glob(tumor_path)
-    # all_controls.extend(control)
-    # all_tumors.extend(tumor)
-
-    # # kits + kirc
+    # # kits dataset + kirc dataset
     tumor = glob.glob(other_datasets_path + '/imagesTr/' + type + '/*nii.gz')
     all_tumors.extend(tumor)
 
@@ -252,8 +247,8 @@ import time
 
 def remove_table_3d(img):
     start = time.time()
-    thresh = -200  # in HU units, it should filter out air :)
-    binary = img > thresh
+    thresh = -800  # in HU units, it should filter out air :)
+    binary = img >= thresh
 
     # for working with 3d components, add binary:true layer to both end to close off any cavities
     true_layer = torch.unsqueeze(torch.ones_like(img[:, :, 0], dtype=torch.bool), dim=2)
@@ -264,14 +259,14 @@ def remove_table_3d(img):
 
     keep_mask = filled_region[:, :, 1:-1]
 
-    # remoev small objects not connected to the main body. 40000 pixels per slice seems to do the work for 512x512 resolution
+    # remove small objects not connected to the main body. 40000 pixels per slice seems to do the work for 512x512 resolution
     min_size = 40000 * img.shape[2]
     keep_mask = morphology.remove_small_objects(keep_mask, min_size=min_size)
     #keep_mask = np.expand_dims(keep_mask, 0)
 
     maskedimg = img.detach().clone()
     # specific fill value does not matter that much if you apply ct windowing afterwards
-    maskedimg[~keep_mask] = thresh
+    maskedimg[~keep_mask] = -1024 # put regular min negative value back
     end = time.time()
     # print("time: ",end-start)
     return maskedimg

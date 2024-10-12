@@ -8,12 +8,13 @@ training:
   epochs: 80
   learning_rate: 1e-4
   weight_decay: 5e-4
+  weight_update_freq: 2
   seed: 1
 
 
 model:
   classes: 1
-  name: resnet18V3
+  name: 'resnet18V3'
   pretrained_imagenet: True
   neighbour_range: 0
   num_heads: 1
@@ -28,5 +29,6 @@ data:
   crop_size: 302
   roll_slices: True
   important_slices_only: False
-  patchify: True
+  no_lungs: True
+  patchify: False
 check: False

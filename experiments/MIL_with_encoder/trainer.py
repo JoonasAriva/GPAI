@@ -34,6 +34,7 @@ class Trainer:
         self.scheduler = scheduler
         self.roll_slices = cfg.data.roll_slices
         self.important_slices_only = cfg.data.important_slices_only
+        self.update_freq = cfg.training.weight_update_freq
         path = "/users/arivajoo/GPAI/slice_statistics/"
         #path = "/gpfs/space/projects/BetterMedicine/joonas/kidney/slice_statistics/"
         self.train_statistics = pd.concat([pd.read_csv(path + "slice_info_kits_kirc_train.csv"),
@@ -136,7 +137,7 @@ class Trainer:
                 #     attention_scores["controls"][0].append(ap_all)
 
             if train:
-                if (step) % 2 == 0 or (step) == len(data_loader):
+                if (step) % self.update_freq == 0 or (step) == len(data_loader):
                     time_backprop = time.time()
                     scaler.scale(total_loss).backward()
                     scaler.step(self.optimizer)

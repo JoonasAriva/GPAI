@@ -1,24 +1,19 @@
 from __future__ import print_function
 
-import numpy as np
-import torch
-
-import torch.utils.data as data_utils
-import torchio as tio
-
-from omegaconf import OmegaConf, DictConfig
-from data.kidney_dataloader import KidneyDataloader
-from data.synth_dataloaders import SynthDataloader
-
-from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
-    ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention, \
-    MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL
-
 import re
 
 import numpy as np
-from skimage.filters import threshold_otsu
+import torch
+import torch.utils.data as data_utils
+import torchio as tio
+from omegaconf import DictConfig
 from sklearn.metrics import average_precision_score
+
+from data.kidney_dataloader import KidneyDataloader
+from data.synth_dataloaders import SynthDataloader
+from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
+    ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention, \
+    MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2
 
 
 def prepare_dataloader(cfg: DictConfig):
@@ -30,7 +25,8 @@ def prepare_dataloader(cfg: DictConfig):
             'only_every_nth_slice': cfg.data.take_every_nth_slice, 'as_rgb': True,
             'plane': 'axial', 'center_crop': cfg.data.crop_size, 'downsample': False,
             'roll_slices': cfg.data.roll_slices,
-            'generate_spheres': True if cfg.data.dataloader == 'kidney_synth' else False, 'patchify': cfg.data.patchify}
+            'generate_spheres': True if cfg.data.dataloader == 'kidney_synth' else False, 'patchify': cfg.data.patchify,
+            'no_lungs': cfg.data.no_lungs}
         train_dataset = KidneyDataloader(type="train",
                                          augmentations=None if not cfg.data.data_augmentations else transforms,
                                          **dataloader_params)
@@ -94,7 +90,7 @@ def pick_model(cfg: DictConfig):
     elif cfg.model.name == 'twostagenet_two_heads':
         model = TwoStageNetTwoHeads(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'twostagenet_two_headsV2':
-        model = TwoStageNetTwoHeads(instnorm=cfg.model.inst_norm)
+        model = TwoStageNetTwoHeadsV2(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'transmil':
         model = TransMIL()
     return model

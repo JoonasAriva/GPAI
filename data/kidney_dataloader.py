@@ -43,7 +43,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
                  augmentations: callable = None, as_rgb: bool = False,
                  sample_shifting: bool = False, plane: str = 'axial',
                  center_crop: int = 120, roll_slices=False, model_type="2D", generate_spheres: bool = False,
-                 patchify: bool = False, patch_size: int = 128):
+                 patchify: bool = False, patch_size: int = 128, no_lungs: bool = False):
         super().__init__()
         self.roll_slices = roll_slices
         self.as_rgb = as_rgb
@@ -57,6 +57,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
         self.type = type
         self.patchify = patchify
         self.patch_size = patch_size
+        self.no_lungs = no_lungs
 
         if roll_slices:
             center_crop = center_crop
@@ -66,7 +67,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
         print("PLANE: ", plane)
         print("CROP SIZE: ", center_crop)
 
-        control, tumor = get_kidney_datasets(type)
+        control, tumor = get_kidney_datasets(type,no_lungs=no_lungs)
 
         control_labels = [[False]] * len(control)
         self.controls = len(control)
@@ -126,7 +127,8 @@ class KidneyDataloader(torch.utils.data.Dataset):
         case_id = match.replace("_0000.nii", ".nii")
         y = torch.Tensor(self.labels[index])
         x = nib.load(path).get_fdata()
-        x = set_orientation(x, path, self.plane)
+        if not self.no_lungs:
+            x = set_orientation(x, path, self.plane)
 
         if self.downsample:
             x = downsample_scan(x)
