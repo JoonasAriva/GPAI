@@ -5,12 +5,13 @@ import numpy as np
 import torch
 import torchio as tio
 from monai.transforms import *
+import copy
 import re
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
 sys.path.append('/users/arivajoo/GPAI/data')
 from data_utils import get_kidney_datasets, set_orientation, downsample_scan, normalize_scan, remove_table_3d, \
-    remove_empty_tiles
+    remove_empty_tiles, set_orientation_nib
 
 
 def make_single_sphere_coords():
@@ -126,9 +127,11 @@ class KidneyDataloader(torch.utils.data.Dataset):
 
         case_id = match.replace("_0000.nii", ".nii")
         y = torch.Tensor(self.labels[index])
-        x = nib.load(path).get_fdata()
-        if not self.no_lungs:
-            x = set_orientation(x, path, self.plane)
+        x = nib.load(path)
+
+        x = set_orientation_nib(x)
+        z_spacing = x.header.get_zooms()[2]
+        x = x.get_fdata()
 
         if self.downsample:
             x = downsample_scan(x)
@@ -213,4 +216,4 @@ class KidneyDataloader(torch.utils.data.Dataset):
             return patches_final, y, (case_id, nth_slice, x)
             #x = remove_empty_tiles(x)
 
-        return x, y,(case_id, nth_slice)
+        return x, y,(case_id, nth_slice, z_spacing)

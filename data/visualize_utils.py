@@ -22,9 +22,8 @@ def get_animation(volume, use_zoom=True, title=None):
                         animated=True, cmap=plt.cm.bone)
 
         plt.axis("off")
-        if title:
-            plt.title(title)
-        ims.append([im])
+        ttl = plt.text(0.5, 1.2, title[image],horizontalalignment='center', verticalalignment='bottom')
+        ims.append([im,ttl])
 
     ani = animation.ArtistAnimation(fig, ims, interval=100, blit=False,
                                     repeat_delay=1000)

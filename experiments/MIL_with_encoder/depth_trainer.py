@@ -6,22 +6,64 @@ from contextlib import nullcontext
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import f1_score
 from tqdm import tqdm
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
-from utils import prepare_statistics_dataframe, get_percentage_of_scans_from_dataframe
+from utils import get_percentage_of_scans_from_dataframe
+import torch.nn as nn
 
 
-def calculate_classification_error(Y, Y_hat):
-    Y = Y.float()
-    error = 1. - Y_hat.eq(Y).cpu().float().mean().data.item()
+class DepthLoss(nn.Module):
+    def __init__(self, alpha=0.05):
+        super(DepthLoss, self).__init__()
+        self.alpha = alpha
 
-    return error
+    def forward(self, depth_scores):
+        depth_matrix = depth_scores.reshape(-1, 1) - depth_scores
+        depth_order_loss = (torch.triu(depth_matrix) / (len(depth_scores) ** 2)).sum()  # division is for normalization
+        regularization = depth_scores.abs().sum() / len(depth_scores)
+        loss = depth_order_loss + self.alpha * regularization
+        return loss
 
 
-class Trainer:
+class DepthLossV2(nn.Module):
+    def __init__(self, step):
+        super().__init__()
+        self.step = step
+
+    def create_step_matrix(self, step_value, distance_matrix):
+        matrix_size = distance_matrix.shape[0]
+        steps = torch.zeros(matrix_size, matrix_size)
+        steps = torch.diagonal_scatter(steps, torch.zeros(matrix_size), 0)
+        for i in range(matrix_size):
+            steps = torch.diagonal_scatter(steps, (1 + i) * step_value * torch.ones(matrix_size - i - 1), 1 + i)
+            steps = torch.diagonal_scatter(steps, (1 + i) * step_value * torch.ones(matrix_size - i - 1), -1 - i)
+        return steps
+
+    def forward(self, predictions, z_spacing):
+        acceptable_step = self.step * z_spacing
+        predictions = predictions[:,0]
+        distance_matrix = predictions.reshape(-1, 1) - predictions
+        steps = self.create_step_matrix(acceptable_step, distance_matrix).type(torch.HalfTensor)
+        # acceptable steps calculated only on slice pairings where the order is correctly predicted
+        idxs = distance_matrix >= 0
+        distance_matrix[idxs] = distance_matrix[idxs] - 0.2 * steps[idxs]
+
+        idxs = distance_matrix >= 0  # this is updated now
+        # remove the remaining part of allowed step
+        distance_matrix[idxs] = torch.maximum(distance_matrix[idxs] - 0.8 * steps[idxs],
+                                              torch.zeros_like(distance_matrix[idxs]))
+        # so: loss is coming from:
+        # a) pairings which are correctly ordered but the distance is too big
+        # b) pairings where order is incorrect (notice abs()), negative ordering gives negative values in distance matrix
+        # c) pairings which are correctly ordered but the distance is too small e.g: (legs : 0.1, neck: 0.15)
+        # TODO: masking for similar values
+        loss = torch.tril(distance_matrix).abs().sum()
+        return loss
+
+
+class TrainerDepth:
     def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None):
 
         self.check = cfg.check
@@ -61,8 +103,6 @@ class Trainer:
 
         results = dict()
         epoch_loss = 0.
-        class_loss = 0.
-        epoch_error = 0.
         step = 0
         nr_of_batches = len(data_loader)
 
@@ -108,57 +148,14 @@ class Trainer:
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
-                # if self.important_slices_only:
-                #     df = prepare_statistics_dataframe(self.train_statistics if train else self.test_statistics,
-                #                                       case_id[0],
-                #                                       self.crop_size, self.nth_slice, self.roll_slices)
-                #     df.loc[(df["kidney"] > 0) | (df["tumor"] > 0) | (df["cyst"] > 0), "important_all"] = 1
-                #     df["important_all"] = df["important_all"].fillna(0)
-                #     df.reset_index(inplace=True)
-                #     # categorize slice vectors by the dataframe
-                #     data = data[df["important_all"] == 1]
-                #     # print("after filtering: ",data.shape)
-                Y_prob, Y_hat, attention = model.forward(data)
+                position_scores = model.forward(data)
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
-                loss = self.loss_function(Y_prob, bag_label.float())
+                loss = self.loss_function(position_scores, meta[2].item())
 
-                if self.slice_level_supervision > 0 and meta[0][0] in self.scan_names:  # if True, we provide supervision
-
-                    scan_df = prepare_statistics_dataframe(self.statistics, meta[0][0], crop_size=self.crop_size,
-                                                           nth_slice=meta[1][0].item(),
-                                                           roll_slices=self.roll_slices)
-                    #print("cropped len:", len(scan_df))
-                    scan_df["roi"] = scan_df["tumor"] + scan_df["kidney"]
-                    scan_df.loc[scan_df["roi"] > 1000, "attention"] = 1
-                    scan_df["attention"] = scan_df["attention"].fillna(0)
-                    attention_labels = torch.from_numpy(scan_df["attention"].values).to(self.device, non_blocking=True)
-
-                    attention_loss = self.loss_function(attention, torch.unsqueeze(attention_labels,dim=0))
-                    #print("attention loss: ", attention_loss)
-                    total_loss = loss + attention_loss
-                else:
-                    total_loss = loss
-
-                total_loss /= self.update_freq
-
-                outputs.append(Y_hat.cpu())
-                targets.append(bag_label.cpu())
-
-                # calculate attention accuracy
-                # ap_all, ap_tumor = evaluate_attention(attention.cpu()[0],
-                # self.statistics,
-                # case_id[0],
-                # self.crop_size, self.nth_slice, bag_label=bag_label, roll_slices=self.roll_slices)
-                # attention_scores["all_scans"][0].append(ap_all)
-                #
-                # if bag_label:
-                #     attention_scores["cases"][0].append(ap_all)
-                #     attention_scores["cases"][1].append(ap_tumor)
-                # else:
-                #     attention_scores["controls"][0].append(ap_all)
+                total_loss = loss / self.update_freq
 
             if train:
                 time_backprop = time.time()
@@ -174,11 +171,6 @@ class Trainer:
                     self.optimizer.zero_grad(set_to_none=True)
 
             epoch_loss += total_loss.item() * self.update_freq
-            class_loss += loss.item()
-
-            error = calculate_classification_error(bag_label, Y_hat)
-
-            epoch_error += error
 
             if step >= 6 and self.check:
                 break
@@ -193,34 +185,15 @@ class Trainer:
         # calculate loss and error for epoch
 
         epoch_loss /= nr_of_batches
-        epoch_error /= nr_of_batches
-        class_loss /= nr_of_batches
-
-        outputs = np.concatenate(outputs)
-        targets = np.concatenate(targets)
-
-        f1 = f1_score(targets, outputs, average='macro')
-
-        # results["attention_map_all_scans_full_kidney"] = np.mean(attention_scores["all_scans"][0])
-        # results["attention_map_cases_full_kidney"] = np.mean(attention_scores["cases"][0])
-        # results["attention_map_cases_tumor"] = np.mean(attention_scores["cases"][1])
-        # results["attention_map_controls_full_kidney"] = np.mean(attention_scores["controls"][0])
 
         print("data speed: ", round(np.mean(data_times), 3), "forward speed ", round(np.mean(forward_times), 3),
               "backprop speed: ", round(np.mean(backprop_times), 3))
 
         print(
-            '{}: loss: {:.4f}, enc error: {:.4f}, f1 macro score: {:.4f}'.format(
-                "Train" if train else "Validation", epoch_loss, epoch_error, f1))
-        print(
-            f"Main classification loss: {round(class_loss, 3)}")
+            '{}: loss: {:.4f}'.format(
+                "Train" if train else "Validation", epoch_loss))
 
-        # print(f"Attention mAP for kidney region all scans: {round(np.mean(attention_scores['all_scans'][0]), 3)}")
-
-        results["classification_loss"] = class_loss
         results["epoch"] = epoch
         results["loss"] = epoch_loss
-        results["error"] = epoch_error
-        results["f1_score"] = f1
 
         return results

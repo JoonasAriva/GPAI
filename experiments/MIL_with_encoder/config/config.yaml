@@ -1,20 +1,20 @@
 hydra:
   run:
-    dir: results/${hydra.job.name}/${model.name}/${data.dataloader}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    dir: results/${experiment}/${hydra.job.name}/${model.name}/${data.dataloader}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-project: MIL_TUH_EXP
+experiment: depth
 
 training:
   epochs: 80
   learning_rate: 1e-4
   weight_decay: 5e-4
-  weight_update_freq: 2
+  weight_update_freq: 1
   seed: 1
 
 
 model:
   classes: 1
-  name: 'resnet18V3'
+  name: 'resnetdepth'
   pretrained_imagenet: True
   neighbour_range: 0
   num_heads: 1
@@ -29,6 +29,7 @@ data:
   crop_size: 302
   roll_slices: True
   important_slices_only: False
-  no_lungs: True
+  no_lungs: False
   patchify: False
+  slice_level_supervision: 0
 check: False

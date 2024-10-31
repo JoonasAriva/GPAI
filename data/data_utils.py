@@ -9,7 +9,7 @@ import torch
 import torch.nn.functional as F
 from scipy import ndimage as ndi
 from skimage import morphology
-
+import nibabel as nib
 matplotlib.rcParams['animation.embed_limit'] = 2 ** 128
 
 
@@ -151,8 +151,12 @@ def set_orientation(x, path, plane):
         raise ValueError('plane is not correctly specified')
 
     return x
-
-
+def set_orientation_nib(x):
+    orig_ornt = nib.io_orientation(x.affine)
+    targ_ornt = nib.orientations.axcodes2ornt("RAS")
+    transform = nib.orientations.ornt_transform(orig_ornt, targ_ornt)
+    x = x.as_reoriented(transform)
+    return x
 def downsample_scan(x, scale_factor=0.5):
     x = torch.from_numpy(x.copy())
     x = F.interpolate(torch.unsqueeze(torch.unsqueeze(x, 0), 0), scale_factor=scale_factor,

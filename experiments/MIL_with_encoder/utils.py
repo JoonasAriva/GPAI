@@ -1,5 +1,6 @@
 from __future__ import print_function
 
+import random
 import re
 
 import numpy as np
@@ -13,7 +14,7 @@ from data.kidney_dataloader import KidneyDataloader
 from data.synth_dataloaders import SynthDataloader
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
     ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention, \
-    MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2
+    MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2, ResNetDepth
 
 
 def prepare_dataloader(cfg: DictConfig):
@@ -93,6 +94,8 @@ def pick_model(cfg: DictConfig):
         model = TwoStageNetTwoHeadsV2(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'transmil':
         model = TransMIL()
+    elif cfg.model.name == 'resnetdepth':
+        model = ResNetDepth(instnorm=cfg.model.inst_norm)
     return model
 
 
@@ -139,7 +142,9 @@ def center_crop_dataframe(df, crop_size):
 
 
 def prepare_statistics_dataframe(df, case_id, crop_size, nth_slice, roll_slices):
-    scan_df = df.loc[df["file_name"] == case_id].copy()[::nth_slice]
+    scan_df = df.loc[df["file_name"] == case_id]
+
+    scan_df = scan_df.copy()[::nth_slice]
 
     cropped_scan_df = center_crop_dataframe(scan_df, crop_size)
     if roll_slices:
@@ -170,3 +175,15 @@ def calculate_ap(attention, df, bag_label):
     else:
         ap_tumor = 0
     return round(ap_all, 2), round(ap_tumor, 2)
+
+
+def get_percentage_of_scans_from_dataframe(df, percentage):
+    grouped_stats = df.groupby("file_name").sum()
+    no_tumor = grouped_stats[grouped_stats["tumor"] == 0].reset_index().file_name.unique()
+    tumor = grouped_stats[grouped_stats["tumor"] > 0].reset_index().file_name.unique()
+    random.shuffle(tumor)
+    random.shuffle(no_tumor)
+    tumor = tumor[:int(percentage * len(tumor))]
+    no_tumor = no_tumor[:int(percentage * len(no_tumor))]
+
+    return np.concatenate([tumor, no_tumor])

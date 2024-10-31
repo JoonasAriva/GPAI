@@ -514,7 +514,6 @@ class TwoStageNetTwoHeads(TwoStageNet):
         self.relevancy_classifier = nn.Linear(self.L * self.K, 1)
 
     def forward(self, x):
-
         H = self.backbone(x)
 
         H = self.adaptive_pooling(H)
@@ -561,7 +560,6 @@ class TwoStageNetTwoHeadsV2(TwoStageNet):
         self.roi_head = AttentionHeadV3(self.L, self.D, self.K)
 
     def forward(self, x):
-
         H = self.backbone(x)
 
         H = self.adaptive_pooling(H)
@@ -583,15 +581,14 @@ class TwoStageNetTwoHeadsV2(TwoStageNet):
                                          rois_non_important)
 
         rois_important = torch.where(mask_important,
-                                         torch.tensor(MASKING_VALUE, device=rois.device, dtype=rois.dtype),
-                                         rois_non_important)
-
+                                     torch.tensor(MASKING_VALUE, device=rois.device, dtype=rois.dtype),
+                                     rois_non_important)
 
         rois_non_important = F.softmax(rois_non_important, dim=1)
 
         attention = self.attention_head(H).view(1, -1)
         attention = torch.where(mask_important, torch.tensor(MASKING_VALUE, device=rois.device, dtype=rois.dtype),
-                                     attention)
+                                attention)
 
         attention = F.softmax(attention, dim=1)
 
@@ -607,6 +604,7 @@ class TwoStageNetTwoHeadsV2(TwoStageNet):
         important_relevancy_probs = self.relevancy_classifier(M_important_rel)
 
         return important_tumor_probs, non_important_relevancy_probs, important_relevancy_probs, rois, attention
+
 
 class TwoStageNetMaskedAttention(TwoStageNet):
     def __init__(self, instnorm=False):
@@ -684,6 +682,7 @@ class MultiHeadTwoStageNet(TwoStageNet):
 
         return important_probs, non_important_probs, rois, logits, Y_hat, attention
 
+
 class TwoStageNetSimple(TwoStageNet):
 
     def __init__(self, instnorm=False):
@@ -724,6 +723,7 @@ class TwoStageNetSimple(TwoStageNet):
 
         return important_probs, non_important_probs, rois
 
+
 class TransMIL(nn.Module):
 
     def __init__(self):
@@ -733,7 +733,6 @@ class TransMIL(nn.Module):
 
         self.classifier = nn.Sequential(nn.Linear(512, 1))
         self.sig = nn.Sigmoid()
-
 
         model = resnet.ResNet(resnet.BasicBlock, [2, 2, 2, 2], norm_layer=MyGroupNorm)
         sd = resnet18(weights=ResNet18_Weights.DEFAULT).state_dict()
@@ -751,7 +750,6 @@ class TransMIL(nn.Module):
         torch.nn.init.trunc_normal_(self.cls_token)
 
     def forward(self, x):
-
         H = self.backbone(x)
         H = self.adaptive_pooling(H)
         H = H.view(-1, 512 * 1 * 1)
@@ -768,3 +766,47 @@ class TransMIL(nn.Module):
         Y_hat = torch.ge(Y_hat, 0.5).float()
 
         return Y_prob, Y_hat, H_out, weights
+
+
+class ResNetDepth(nn.Module):
+
+    def __init__(self, instnorm=False, resnet_type="18"):
+        super().__init__()
+        self.instnorm = instnorm
+
+        self.L = 512 * 1 * 1
+        self.D = 128
+        self.K = 1
+        self.resnet_type = resnet_type
+
+        self.adaptive_pooling = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)))
+        self.classifier = nn.Sequential(nn.Linear(self.L * self.K, 1))
+
+        if self.instnorm:
+            # load the resnet with instance norm instead of batch norm
+
+            if resnet_type == "18":
+                model = resnet.ResNet(resnet.BasicBlock, [2, 2, 2, 2], norm_layer=MyGroupNorm)
+                sd = resnet18(weights=ResNet18_Weights.DEFAULT).state_dict()
+            elif resnet_type == "34":
+                model = resnet.ResNet(resnet.BasicBlock, [3, 4, 6, 3], norm_layer=MyGroupNorm)
+                sd = resnet34(weights=ResNet34_Weights.DEFAULT).state_dict()
+
+            model.load_state_dict(sd, strict=False)
+        else:
+            if resnet_type == "18":
+                model = resnet18(weights=ResNet18_Weights.DEFAULT)
+            if resnet_type == "34":
+                model = resnet34(weights=ResNet34_Weights.DEFAULT)
+
+        modules = list(model.children())[:-2]
+        self.backbone = nn.Sequential(*modules)
+
+    def forward(self, x):
+        H = self.backbone(x)
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+
+        depth_scores = self.classifier(H)
+
+        return depth_scores
