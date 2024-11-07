@@ -10,11 +10,11 @@ import torchio as tio
 from omegaconf import DictConfig
 from sklearn.metrics import average_precision_score
 
-from data.kidney_dataloader import KidneyDataloader
+from data.kidney_dataloader import KidneyDataloader, AbdomenAtlasLoader
 from data.synth_dataloaders import SynthDataloader
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
     ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention, \
-    MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2, ResNetDepth
+    MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2, ResNetDepth, TransDepth
 
 
 def prepare_dataloader(cfg: DictConfig):
@@ -56,6 +56,27 @@ def prepare_dataloader(cfg: DictConfig):
         train_loader = data_utils.DataLoader(train_dataset, batch_size=1, shuffle=True, **loader_kwargs)
         test_loader = data_utils.DataLoader(test_dataset, batch_size=1, shuffle=False, **loader_kwargs)
 
+    elif cfg.data.dataloader == "abdomen_atlas":
+
+        transforms = tio.Compose(
+            [tio.RandomFlip(axes=(0, 1)),
+             tio.RandomAffine(scales=(1, 1.2), degrees=(0, 0, 10), translation=(50, 50, 0))])
+
+        dataloader_params = {
+            'only_every_nth_slice': cfg.data.take_every_nth_slice, 'as_rgb': True,
+            'plane': 'axial', 'center_crop': cfg.data.crop_size,
+            'roll_slices': cfg.data.roll_slices, 'patchify': cfg.data.patchify}
+        train_dataset = AbdomenAtlasLoader(type="train",
+                                           augmentations=None if not cfg.data.data_augmentations else transforms,
+                                           **dataloader_params)
+
+        test_dataset = AbdomenAtlasLoader(type="test",
+                                          augmentations=None,
+                                          **dataloader_params)
+        loader_kwargs = {'num_workers': 4, 'pin_memory': True} if torch.cuda.is_available() else {}
+
+        train_loader = data_utils.DataLoader(train_dataset, batch_size=1, shuffle=True, **loader_kwargs)
+        test_loader = data_utils.DataLoader(test_dataset, batch_size=1, shuffle=False, **loader_kwargs)
     else:
         print("Wrong type specified")
     return train_loader, test_loader
@@ -96,6 +117,8 @@ def pick_model(cfg: DictConfig):
         model = TransMIL()
     elif cfg.model.name == 'resnetdepth':
         model = ResNetDepth(instnorm=cfg.model.inst_norm)
+    elif cfg.model.name == 'transdepth':
+        model = TransDepth(instnorm=cfg.model.inst_norm)
     return model
 
 
@@ -145,7 +168,7 @@ def prepare_statistics_dataframe(df, case_id, crop_size, nth_slice, roll_slices)
     scan_df = df.loc[df["file_name"] == case_id]
 
     scan_df = scan_df.copy()[::nth_slice]
-
+    # print("len after nth slice sampling: ", len(scan_df))
     cropped_scan_df = center_crop_dataframe(scan_df, crop_size)
     if roll_slices:
         cropped_scan_df = cropped_scan_df[1:-1].copy()

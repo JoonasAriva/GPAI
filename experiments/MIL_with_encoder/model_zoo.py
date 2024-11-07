@@ -43,6 +43,7 @@ class ResNetAttentionV3(nn.Module):
         self.neighbour_range = neighbour_range
         self.num_attention_heads = num_attention_heads
         self.instnorm = instnorm
+
         print("Using neighbour attention with a range of ", self.neighbour_range)
         print("# of attention heads: ", self.num_attention_heads)
         self.L = 512 * 1 * 1
@@ -808,5 +809,51 @@ class ResNetDepth(nn.Module):
         H = H.view(-1, 512 * 1 * 1)
 
         depth_scores = self.classifier(H)
+
+        return depth_scores
+
+
+class TransDepth(nn.Module):
+
+    def __init__(self, instnorm=False, resnet_type="18"):
+        super().__init__()
+        self.instnorm = instnorm
+        self.adaptive_pooling = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)))
+
+        self.classifier = nn.Sequential(nn.Linear(512, 1))
+        self.sig = nn.Sigmoid()
+
+        if self.instnorm:
+            # load the resnet with instance norm instead of batch norm
+
+            if resnet_type == "18":
+                model = resnet.ResNet(resnet.BasicBlock, [2, 2, 2, 2], norm_layer=MyGroupNorm)
+                sd = resnet18(weights=ResNet18_Weights.DEFAULT).state_dict()
+            elif resnet_type == "34":
+                model = resnet.ResNet(resnet.BasicBlock, [3, 4, 6, 3], norm_layer=MyGroupNorm)
+                sd = resnet34(weights=ResNet34_Weights.DEFAULT).state_dict()
+
+            model.load_state_dict(sd, strict=False)
+        else:
+            if resnet_type == "18":
+                model = resnet18(weights=ResNet18_Weights.DEFAULT)
+            if resnet_type == "34":
+                model = resnet34(weights=ResNet34_Weights.DEFAULT)
+
+        modules = list(model.children())[:-2]
+        self.backbone = nn.Sequential(*modules)
+
+        self.self_attention1 = SelfAttention(embed_dim=512, num_heads=8)
+        self.self_attention2 = SelfAttention(embed_dim=512, num_heads=8)
+        self.norm1 = nn.LayerNorm(512)
+        self.norm2 = nn.LayerNorm(512)
+
+    def forward(self, x):
+        H = self.backbone(x)
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+
+        H = H + self.self_attention1(self.norm1(H))[0]
+        depth_scores = self.classifier(self.norm2(H))
 
         return depth_scores

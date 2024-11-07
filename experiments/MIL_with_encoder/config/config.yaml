@@ -2,7 +2,7 @@ hydra:
   run:
     dir: results/${experiment}/${hydra.job.name}/${model.name}/${data.dataloader}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-experiment: depth
+experiment: MIL
 
 training:
   epochs: 80
@@ -14,8 +14,9 @@ training:
 
 model:
   classes: 1
-  name: 'resnetdepth'
+  name: 'resnet18V3'
   pretrained_imagenet: True
+  pretrained_depth: True
   neighbour_range: 0
   num_heads: 1
   inst_norm: True
@@ -32,4 +33,4 @@ data:
   no_lungs: False
   patchify: False
   slice_level_supervision: 0
-check: False
+check: True

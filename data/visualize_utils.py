@@ -22,8 +22,11 @@ def get_animation(volume, use_zoom=True, title=None):
                         animated=True, cmap=plt.cm.bone)
 
         plt.axis("off")
-        ttl = plt.text(0.5, 1.2, title[image],horizontalalignment='center', verticalalignment='bottom')
-        ims.append([im,ttl])
+        if title is not None:
+            ttl = plt.text(0.5, 1.2, title[image],horizontalalignment='center', verticalalignment='bottom')
+            ims.append([im,ttl])
+        else:
+            ims.append([im])
 
     ani = animation.ArtistAnimation(fig, ims, interval=100, blit=False,
                                     repeat_delay=1000)
@@ -78,6 +81,7 @@ def get_animation_with_masks(volume, mask, use_zoom=True):
     if use_zoom:
         volume = zoom(volume, (0.3, 0.3, 0.3))
         mask = zoom(mask, (0.3, 0.3, 0.3))
+
     fig = plt.figure()
     # ax = fig.add_subplot(1,1,1)
     ims = []

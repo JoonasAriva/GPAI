@@ -49,15 +49,26 @@ def main(cfg: DictConfig):
     print('Load Train and Test Set')
 
     train_loader, test_loader = prepare_dataloader(cfg)
+    steps_in_epoch = 500
     if cfg.data.dataloader == "kidney_real":
         proj_name = "MIL_encoder_24"
     elif cfg.data.dataloader == "synthetic" or "kidney_synth":
         proj_name = "MIL_encoder_synth24"
     if cfg.experiment == 'depth':
-        proj_name = "depth"
-    steps_in_epoch = 500
+        if cfg.data.dataloader == "abdomen_atlas":
+            proj_name = "abdomen_atlas_depth"
+            steps_in_epoch = 4666
+        else:
+            proj_name = "depth"
+
+
     logging.info('Init Model')
     model = pick_model(cfg)
+    if cfg.model.pretrained_depth:
+        sd = torch.load(
+            '/users/arivajoo/results/depth/train/resnetdepth/kidney_real/2024-10-31/17-01-11/checkpoints/best_model.pth')
+        model.load_state_dict(state_dict=sd, strict=False)
+        logging.info('Loaded depth pretrained weights')
 
     # if you need to continue training
     resume_run = False

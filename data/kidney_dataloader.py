@@ -1,17 +1,17 @@
 import sys
-import raster_geometry as rg
+from glob import glob
+
 import nibabel as nib
 import numpy as np
+import raster_geometry as rg
 import torch
 import torchio as tio
 from monai.transforms import *
-import copy
-import re
+from sklearn.model_selection import train_test_split
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
 sys.path.append('/users/arivajoo/GPAI/data')
-from data_utils import get_kidney_datasets, set_orientation, downsample_scan, normalize_scan, remove_table_3d, \
-    remove_empty_tiles, set_orientation_nib
+from data_utils import get_kidney_datasets, downsample_scan, normalize_scan, set_orientation_nib
 
 
 def make_single_sphere_coords():
@@ -68,7 +68,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
         print("PLANE: ", plane)
         print("CROP SIZE: ", center_crop)
 
-        control, tumor = get_kidney_datasets(type,no_lungs=no_lungs)
+        control, tumor = get_kidney_datasets(type, no_lungs=no_lungs)
 
         control_labels = [[False]] * len(control)
         self.controls = len(control)
@@ -194,17 +194,17 @@ class KidneyDataloader(torch.utils.data.Dataset):
             x = torch.Tensor(x)
 
             if self.type == "train":
-                shift_x , shift_y = np.random.choice([0,-64,64]), np.random.choice([0,-64,64])
+                shift_x, shift_y = np.random.choice([0, -64, 64]), np.random.choice([0, -64, 64])
                 x = torch.roll(x, shifts=(shift_x, shift_y), dims=(1, 2))
             patches = x.unfold(1, 150, 128).unfold(2, 150, 128)
 
             last_fold1 = torch.permute(x[:, -150:, :, :].unfold(2, 150, 128), (0, 2, 3, 1, 4)).reshape(3, -1, 150, 150)
 
-            #last_fold2 = x[:, :, -150:, :].unfold(1, 150, 128)
+            # last_fold2 = x[:, :, -150:, :].unfold(1, 150, 128)
 
-            #last_fold2 = torch.permute(last_fold2, (0, 1, 3, 4, 2))
+            # last_fold2 = torch.permute(last_fold2, (0, 1, 3, 4, 2))
 
-            #last_fold2 = last_fold2.reshape(3, -1, 150, 150)
+            # last_fold2 = last_fold2.reshape(3, -1, 150, 150)
 
             last_fold2 = torch.permute(x[:, :, -150:, :].unfold(1, 150, 128), (0, 1, 3, 4, 2)).reshape(3, -1, 150, 150)
 
@@ -214,6 +214,102 @@ class KidneyDataloader(torch.utils.data.Dataset):
             patches_final = torch.cat((patches, last_fold1, last_fold2, last_fold3), dim=1)
             patches_final = torch.permute(patches_final, (0, 2, 3, 1))
             return patches_final, y, (case_id, nth_slice, x)
-            #x = remove_empty_tiles(x)
+            # x = remove_empty_tiles(x)
 
-        return x, y,(case_id, nth_slice, z_spacing)
+        return x, y, (case_id, nth_slice, z_spacing)
+
+
+class AbdomenAtlasLoader(torch.utils.data.Dataset):
+    def __init__(self, only_every_nth_slice: int = 1, type: str = "train", downsample: bool = False,
+                 augmentations: callable = None, as_rgb: bool = False,
+                 sample_shifting: bool = False, plane: str = 'axial',
+                 center_crop: int = 120, roll_slices=False, model_type="2D", generate_spheres: bool = False,
+                 patchify: bool = False, patch_size: int = 128, no_lungs: bool = False):
+        super().__init__()
+        self.roll_slices = roll_slices
+        self.as_rgb = as_rgb
+        self.augmentations = augmentations
+        self.nth_slice = only_every_nth_slice
+        self.model_type = model_type
+        self.type = type
+
+        self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))  # 500
+
+        self.resizer = Resize(spatial_size=512, size_mode="longest")
+        print("PLANE: ", plane)
+        print("CROP SIZE: ", center_crop)
+
+        img_paths = glob('/scratch/project_465001111/abdomen_atlas/*/ct.nii.gz')
+        self.train_scans, self.test_scans = train_test_split(img_paths, test_size=0.1, random_state=42)
+
+        if type == 'train':
+            self.img_paths = self.train_scans
+        else:
+            self.img_paths = self.test_scans
+        print("Data length: ", len(self.img_paths))
+
+    def pick_sample_frequency(self, nr_of_original_slices: int, nth_slice: int):
+
+        if nth_slice == 1:
+            return nth_slice
+
+        if nr_of_original_slices / nth_slice < 50:
+            return self.pick_sample_frequency(nr_of_original_slices, nth_slice - 1)
+        else:
+            return nth_slice
+
+    def __len__(self):
+        # a DataSet must know its size
+        return len(self.img_paths)
+
+    def __getitem__(self, index):
+
+        path = self.img_paths[index]
+
+        # find scan id from path
+
+        case_id = path.split('/')[-2]
+
+        x = nib.load(path)
+
+        x = set_orientation_nib(x)
+        z_spacing = x.header.get_zooms()[2]
+        x = x.get_fdata()
+
+        nr_of_original_slices = x.shape[-1]
+
+        nth_slice = self.pick_sample_frequency(nr_of_original_slices, self.nth_slice)
+
+        x = x[:, :, ::nth_slice]  # sample slices
+        x = np.expand_dims(x, 0)  # needed for cropper
+        x = self.center_cropper(x).as_tensor()
+        x = np.squeeze(x)
+
+        x = np.clip(x, -1024, None)
+
+        if self.as_rgb:  # if we need 3 channel input
+            if self.roll_slices:
+
+                roll_forward = np.roll(x, 1, axis=(2))
+                # mirror the first slice
+                # roll_forward[:, :, 0] = roll_forward[:, :, 1]
+                roll_back = np.roll(x, -1, axis=(2))
+                # mirror the first slice
+                # roll_back[:, :, -1] = roll_back[:, :, -2]
+                x = np.stack((roll_back, x, roll_forward), axis=0)
+                x = x[:, :, :, 1:-1]
+            else:
+                x = np.concatenate((x, x, x), axis=0)
+
+        if self.augmentations is not None:
+
+            if self.roll_slices:
+                x = self.augmentations(x)
+
+            else:
+                for i in range(x.shape[2]):
+                    x[:, :, i] = self.augmentations(np.expand_dims(x[:, :, i], 0))
+
+        x = normalize_scan(x, single_channel=not self.as_rgb, model_type=self.model_type, remove_bones=False)
+
+        return x, (case_id, nth_slice, z_spacing)

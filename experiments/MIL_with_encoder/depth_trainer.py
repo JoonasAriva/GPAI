@@ -41,11 +41,13 @@ class DepthLossV2(nn.Module):
             steps = torch.diagonal_scatter(steps, (1 + i) * step_value * torch.ones(matrix_size - i - 1), -1 - i)
         return steps
 
-    def forward(self, predictions, z_spacing):
-        acceptable_step = self.step * z_spacing
-        predictions = predictions[:,0]
+    def forward(self, predictions, z_spacing, nth_slice):
+        # nth slice - slice sample frequency
+        # if we only take every 3rd slice for example
+        acceptable_step = self.step * z_spacing * nth_slice
+        predictions = predictions[:, 0]
         distance_matrix = predictions.reshape(-1, 1) - predictions
-        steps = self.create_step_matrix(acceptable_step, distance_matrix).type(torch.HalfTensor)
+        steps = self.create_step_matrix(acceptable_step, distance_matrix).type(torch.HalfTensor).cuda()
         # acceptable steps calculated only on slice pairings where the order is correctly predicted
         idxs = distance_matrix >= 0
         distance_matrix[idxs] = distance_matrix[idxs] - 0.2 * steps[idxs]
@@ -59,7 +61,7 @@ class DepthLossV2(nn.Module):
         # b) pairings where order is incorrect (notice abs()), negative ordering gives negative values in distance matrix
         # c) pairings which are correctly ordered but the distance is too small e.g: (legs : 0.1, neck: 0.15)
         # TODO: masking for similar values
-        loss = torch.tril(distance_matrix).abs().sum()
+        loss = torch.tril(distance_matrix).abs().sum() / (len(predictions) ** 2) # division is for normalization
         return loss
 
 
@@ -120,6 +122,7 @@ class TrainerDepth:
         data_times = []
         forward_times = []
         backprop_times = []
+        loss_times = []
         outputs = []
         targets = []
 
@@ -153,8 +156,10 @@ class TrainerDepth:
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
-                loss = self.loss_function(position_scores, meta[2].item())
-
+                time_loss = time.time()
+                loss = self.loss_function(position_scores, z_spacing=meta[2].item(), nth_slice=meta[1].item())
+                loss_time = time.time() - time_loss
+                loss_times.append(loss_time)
                 total_loss = loss / self.update_freq
 
             if train:
@@ -187,7 +192,7 @@ class TrainerDepth:
         epoch_loss /= nr_of_batches
 
         print("data speed: ", round(np.mean(data_times), 3), "forward speed ", round(np.mean(forward_times), 3),
-              "backprop speed: ", round(np.mean(backprop_times), 3))
+              "backprop speed: ", round(np.mean(backprop_times), 3), "loss speed: ", round(np.mean(loss_times), 3), )
 
         print(
             '{}: loss: {:.4f}'.format(
