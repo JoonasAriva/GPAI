@@ -223,8 +223,7 @@ class AbdomenAtlasLoader(torch.utils.data.Dataset):
     def __init__(self, only_every_nth_slice: int = 1, type: str = "train", downsample: bool = False,
                  augmentations: callable = None, as_rgb: bool = False,
                  sample_shifting: bool = False, plane: str = 'axial',
-                 center_crop: int = 120, roll_slices=False, model_type="2D", generate_spheres: bool = False,
-                 patchify: bool = False, patch_size: int = 128, no_lungs: bool = False):
+                 center_crop: int = 120, roll_slices=False, model_type="2D", dynamic_sampling: bool = True):
         super().__init__()
         self.roll_slices = roll_slices
         self.as_rgb = as_rgb
@@ -232,8 +231,11 @@ class AbdomenAtlasLoader(torch.utils.data.Dataset):
         self.nth_slice = only_every_nth_slice
         self.model_type = model_type
         self.type = type
+        self.dynamic_sampling = dynamic_sampling
 
         self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))  # 500
+        self.padder = SpatialPad(spatial_size=(512, 512, -1), mode="minimum")
+        self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop-2), method="end",constant_values=0)
 
         self.resizer = Resize(spatial_size=512, size_mode="longest")
         print("PLANE: ", plane)
@@ -278,11 +280,14 @@ class AbdomenAtlasLoader(torch.utils.data.Dataset):
 
         nr_of_original_slices = x.shape[-1]
 
-        nth_slice = self.pick_sample_frequency(nr_of_original_slices, self.nth_slice)
-
+        if self.dynamic_sampling:
+            nth_slice = self.pick_sample_frequency(nr_of_original_slices, self.nth_slice)
+        else:
+            nth_slice = self.nth_slice
         x = x[:, :, ::nth_slice]  # sample slices
+
         x = np.expand_dims(x, 0)  # needed for cropper
-        x = self.center_cropper(x).as_tensor()
+        x = self.padder(self.center_cropper(x)).as_tensor()
         x = np.squeeze(x)
 
         x = np.clip(x, -1024, None)
@@ -311,5 +316,9 @@ class AbdomenAtlasLoader(torch.utils.data.Dataset):
                     x[:, :, i] = self.augmentations(np.expand_dims(x[:, :, i], 0))
 
         x = normalize_scan(x, single_channel=not self.as_rgb, model_type=self.model_type, remove_bones=False)
+        height_before_padding = x.shape[-1]
+        x = self.padder_z(x).as_tensor()
 
-        return x, (case_id, nth_slice, z_spacing)
+
+        bag_label = torch.Tensor([1])  # placeholder
+        return x, bag_label, (case_id, nth_slice, z_spacing, height_before_padding)

@@ -146,7 +146,7 @@ class TrainerDepth:
             data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
 
             data = data.to(self.device, dtype=torch.float16, non_blocking=True)
-            bag_label = bag_label.to(self.device, non_blocking=True)
+            #bag_label = bag_label.to(self.device, non_blocking=True)
 
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():

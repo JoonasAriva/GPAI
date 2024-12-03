@@ -810,7 +810,7 @@ class ResNetDepth(nn.Module):
 
         depth_scores = self.classifier(H)
 
-        return depth_scores
+        return depth_scores, H
 
 
 class TransDepth(nn.Module):
@@ -857,3 +857,27 @@ class TransDepth(nn.Module):
         depth_scores = self.classifier(self.norm2(H))
 
         return depth_scores
+
+
+class CompassModel(ResNetDepth):
+    def __init__(self, instnorm=False, resnet_type="18"):
+        super().__init__()
+
+        self.attention = AttentionHeadV3(512,128,1)
+        self.tumor_classifier = nn.Linear(512, 1)
+
+    def forward(self, x):
+        H = self.backbone(x)
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+
+        depth_scores = self.classifier(H)
+        attention_scores = self.attention(H)
+        attention_scores = F.softmax(attention_scores)
+
+        aggregated_vec = torch.mm(attention_scores, H)
+        tumor_score = self.tumor_classifier(aggregated_vec)
+        prediction = self.sigmoid(tumor_score)
+        Y_hat = torch.ge(prediction, 0.5).float()
+
+        return depth_scores, tumor_score
