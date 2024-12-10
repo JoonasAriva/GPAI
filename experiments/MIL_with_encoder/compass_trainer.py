@@ -5,81 +5,23 @@ from contextlib import nullcontext
 
 import numpy as np
 import pandas as pd
-import torch
 from tqdm import tqdm
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
 from utils import get_percentage_of_scans_from_dataframe
-import torch.nn as nn
+import torch
+from sklearn.metrics import f1_score
 
 
-class DepthLoss(nn.Module):
-    def __init__(self, alpha=0.05):
-        super(DepthLoss, self).__init__()
-        self.alpha = alpha
+def calculate_classification_error(Y, Y_hat):
+    Y = Y.float()
+    error = 1. - Y_hat.eq(Y).cpu().float().mean().data.item()
 
-    def forward(self, depth_scores):
-        depth_matrix = depth_scores.reshape(-1, 1) - depth_scores
-        depth_order_loss = (torch.triu(depth_matrix) / (len(depth_scores) ** 2)).sum()  # division is for normalization
-        regularization = depth_scores.abs().sum() / len(depth_scores)
-        loss = depth_order_loss + self.alpha * regularization
-        return loss
+    return error
 
 
-class DepthLossV2(nn.Module):
-    def __init__(self, step):
-        super().__init__()
-        self.step = step
-
-    def create_step_matrix(self, step_value, distance_matrix):
-        matrix_size = distance_matrix.shape[0]
-        steps = torch.zeros(matrix_size, matrix_size)
-        steps = torch.diagonal_scatter(steps, torch.zeros(matrix_size), 0)
-        for i in range(matrix_size):
-            steps = torch.diagonal_scatter(steps, (1 + i) * step_value * torch.ones(matrix_size - i - 1), 1 + i)
-            steps = torch.diagonal_scatter(steps, (1 + i) * step_value * torch.ones(matrix_size - i - 1), -1 - i)
-        return steps
-
-    def forward(self, predictions, z_spacing, nth_slice):
-        # nth slice - slice sample frequency
-        # if we only take every 3rd slice for example
-        acceptable_step = self.step * z_spacing * nth_slice
-        predictions = predictions[:, 0]
-        distance_matrix = predictions.reshape(-1, 1) - predictions
-        steps = self.create_step_matrix(acceptable_step, distance_matrix).type(torch.HalfTensor).cuda()
-        # acceptable steps calculated only on slice pairings where the order is correctly predicted
-        idxs = distance_matrix >= 0
-        distance_matrix[idxs] = distance_matrix[idxs] - 0.2 * steps[idxs]
-
-        idxs = distance_matrix >= 0  # this is updated now
-        # remove the remaining part of allowed step
-        distance_matrix[idxs] = torch.maximum(distance_matrix[idxs] - 0.8 * steps[idxs],
-                                              torch.zeros_like(distance_matrix[idxs]))
-        # so: loss is coming from:
-        # a) pairings which are correctly ordered but the distance is too big
-        # b) pairings where order is incorrect (notice abs()), negative ordering gives negative values in distance matrix
-        # c) pairings which are correctly ordered but the distance is too small e.g: (legs : 0.1, neck: 0.15)
-        # TODO: masking for similar values
-        loss = torch.tril(distance_matrix).abs().sum() / (len(predictions) ** 2)  # division is for normalization
-        return loss
-
-
-class CompassLoss(nn.Module):
-    def __init__(self, step):
-        super().__init__()
-
-        self.cls_loss = torch.nn.BCEWithLogitsLoss()
-        self.depth_loss = DepthLossV2(step=step)
-
-    def forward(self, depth_predictions, z_spacing, nth_slice, tumor_prob, bag_label):
-        d_loss = self.depth_loss(depth_predictions, z_spacing, nth_slice)
-        cls_loss = self.cls_loss(tumor_prob, bag_label)
-
-        return d_loss, cls_loss
-
-
-class TrainerDepth:
+class TrainerCompass:
     def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None):
 
         self.check = cfg.check
@@ -119,6 +61,7 @@ class TrainerDepth:
 
         results = dict()
         epoch_loss = 0.
+        epoch_error = 0.
         depth_loss = 0.
         class_loss = 0.
         step = 0
@@ -167,7 +110,7 @@ class TrainerDepth:
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
-                position_scores, tumor_score, Y_hat = model.forward(data)
+                position_scores, tumor_score, Y_hat = model.forward(data, scan_end= meta[3])
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
@@ -180,6 +123,11 @@ class TrainerDepth:
                 loss_time = time.time() - time_loss
                 loss_times.append(loss_time)
                 total_loss = (d_loss + cls_loss) / self.update_freq
+
+            error = calculate_classification_error(bag_label, Y_hat)
+            epoch_error += error
+            outputs.append(Y_hat.cpu())
+            targets.append(bag_label.cpu())
 
             if train:
                 time_backprop = time.time()
@@ -213,17 +161,27 @@ class TrainerDepth:
         epoch_loss /= nr_of_batches
         depth_loss /= nr_of_batches
         class_loss /= nr_of_batches
+        epoch_error /= nr_of_batches
+
+        outputs = np.concatenate(outputs)
+        targets = np.concatenate(targets)
+
+        f1 = f1_score(targets, outputs, average='macro')
 
         print("data speed: ", round(np.mean(data_times), 3), "forward speed ", round(np.mean(forward_times), 3),
               "backprop speed: ", round(np.mean(backprop_times), 3), "loss speed: ", round(np.mean(loss_times), 3), )
 
         print(
-            '{}: loss: {:.4f}'.format(
-                "Train" if train else "Validation", epoch_loss))
+            '{}: loss: {:.4f}, enc error: {:.4f}, f1 macro score: {:.4f}'.format(
+                "Train" if train else "Validation", epoch_loss, epoch_error, f1))
+        print(
+            f"Main classification loss: {round(class_loss, 3)}")
 
         results["epoch"] = epoch
         results["loss"] = epoch_loss
         results["depth_loss"] = depth_loss
         results["class_loss"] = class_loss
+        results["error"] = epoch_error
+        results["f1_score"] = f1
 
         return results

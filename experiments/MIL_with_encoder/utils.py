@@ -14,7 +14,8 @@ from data.kidney_dataloader import KidneyDataloader, AbdomenAtlasLoader
 from data.synth_dataloaders import SynthDataloader
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
     ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention, \
-    MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2, ResNetDepth, TransDepth
+    MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2, ResNetDepth, TransDepth, CompassModel, \
+    CompassModelV2, TwoStageCompass
 
 
 def prepare_dataloader(cfg: DictConfig):
@@ -33,7 +34,7 @@ def prepare_dataloader(cfg: DictConfig):
                                          **dataloader_params)
         test_dataset = KidneyDataloader(type="test", **dataloader_params)
 
-        loader_kwargs = {'num_workers': 4, 'pin_memory': True} if torch.cuda.is_available() else {}
+        loader_kwargs = {'num_workers': 7, 'pin_memory': True} if torch.cuda.is_available() else {}
 
         # create sampler for training set
         class_sample_count = [train_dataset.controls, train_dataset.cases]
@@ -73,7 +74,7 @@ def prepare_dataloader(cfg: DictConfig):
         test_dataset = AbdomenAtlasLoader(type="test",
                                           augmentations=None,
                                           **dataloader_params)
-        loader_kwargs = {'num_workers': 4, 'pin_memory': True} if torch.cuda.is_available() else {}
+        loader_kwargs = {'num_workers': 7, 'pin_memory': True} if torch.cuda.is_available() else {}
 
         train_loader = data_utils.DataLoader(train_dataset, batch_size=1, shuffle=True, **loader_kwargs)
         test_loader = data_utils.DataLoader(test_dataset, batch_size=1, shuffle=False, **loader_kwargs)
@@ -119,6 +120,12 @@ def pick_model(cfg: DictConfig):
         model = ResNetDepth(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'transdepth':
         model = TransDepth(instnorm=cfg.model.inst_norm)
+    elif cfg.model.name == 'compass_model':
+        model = CompassModel(instnorm=cfg.model.inst_norm)
+    elif cfg.model.name == 'compass_modelV2':
+        model = CompassModelV2(instnorm=cfg.model.inst_norm)
+    elif cfg.model.name == 'compass_modelV3':
+        model = TwoStageCompass(instnorm=cfg.model.inst_norm)
     return model
 
 

@@ -21,7 +21,9 @@ from trainer_two_stage import TrainerTwoStage
 from trainer import Trainer
 from trainer_multi_two_stage import TrainerTwoStageMulti
 from trainer_two_stage_two_heads import TrainerTwoStageTwoHeads
-from depth_trainer import TrainerDepth, DepthLossV2
+from depth_trainer import TrainerDepth, DepthLossV2, CompassLoss
+from compass_trainer import TrainerCompass
+from compass_two_stage_trainer import TwoStageCompassLoss, TrainerCompassTwoStage
 from utils import prepare_dataloader, pick_model
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
@@ -60,7 +62,6 @@ def main(cfg: DictConfig):
             steps_in_epoch = 4666
         else:
             proj_name = "depth"
-
 
     logging.info('Init Model')
     model = pick_model(cfg)
@@ -109,6 +110,14 @@ def main(cfg: DictConfig):
         loss_function = DepthLossV2(step=0.01).cuda()
         trainer = TrainerDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                                steps_in_epoch=steps_in_epoch)
+    elif cfg.experiment == "compass":
+        loss_function = CompassLoss(step=0.01).cuda()
+        trainer = TrainerCompass(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                                 steps_in_epoch=steps_in_epoch)
+    elif cfg.experiment == "compass_twostage":
+        loss_function = TwoStageCompassLoss(step=0.01).cuda()
+        trainer = TrainerCompassTwoStage(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                                         steps_in_epoch=steps_in_epoch)
     else:
         loss_function = torch.nn.BCEWithLogitsLoss().cuda()
         trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,

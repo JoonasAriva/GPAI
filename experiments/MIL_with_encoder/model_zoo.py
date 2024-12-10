@@ -861,23 +861,91 @@ class TransDepth(nn.Module):
 
 class CompassModel(ResNetDepth):
     def __init__(self, instnorm=False, resnet_type="18"):
-        super().__init__()
+        super().__init__(instnorm, resnet_type)
 
-        self.attention = AttentionHeadV3(512,128,1)
+        self.attention = AttentionHeadV3(512, 128, 1)
         self.tumor_classifier = nn.Linear(512, 1)
+        self.sigmoid = nn.Sigmoid()
 
-    def forward(self, x):
+    def forward(self, x, scan_end):
         H = self.backbone(x)
         H = self.adaptive_pooling(H)
         H = H.view(-1, 512 * 1 * 1)
+        H = H[:scan_end]
 
         depth_scores = self.classifier(H)
         attention_scores = self.attention(H)
-        attention_scores = F.softmax(attention_scores)
+        softmaxed_attention_scores = F.softmax(attention_scores, dim=1)
 
-        aggregated_vec = torch.mm(attention_scores, H)
+        aggregated_vec = torch.mm(softmaxed_attention_scores.T, H)
         tumor_score = self.tumor_classifier(aggregated_vec)
         prediction = self.sigmoid(tumor_score)
         Y_hat = torch.ge(prediction, 0.5).float()
 
-        return depth_scores, tumor_score
+        individual_preds = self.tumor_classifier(H)
+
+        return depth_scores, tumor_score, Y_hat, attention_scores, individual_preds
+
+
+class CompassModelV2(ResNetDepth):
+    def __init__(self, instnorm=False, resnet_type="18"):
+        super().__init__(instnorm, resnet_type)
+
+        self.depth_attention = nn.Sequential(nn.Linear(1, 4),
+                                             nn.ReLU(),
+                                             nn.Linear(4, 1))
+        self.tumor_classifier = nn.Linear(512, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x, scan_end):
+        H = self.backbone(x)
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+        H = H[:scan_end]
+        depth_scores = self.classifier(H)
+        attention_scores = self.depth_attention(depth_scores)
+        softmaxed_attention_scores = F.softmax(attention_scores, dim=1)
+
+        aggregated_vec = torch.mm(softmaxed_attention_scores.T, H)
+        tumor_score = self.tumor_classifier(aggregated_vec)
+        prediction = self.sigmoid(tumor_score)
+        Y_hat = torch.ge(prediction, 0.5).float()
+
+        return depth_scores, tumor_score, Y_hat, attention_scores
+
+
+class TwoStageCompass(ResNetDepth):
+    def __init__(self, instnorm=False, resnet_type="18"):
+        super().__init__(instnorm, resnet_type)
+
+        self.tumor_classifier = nn.Linear(512, 1)
+        self.relevancy_classifier = nn.Linear(512, 1)
+
+        self.depth_range = nn.Parameter(torch.Tensor([-0.5, 0.5]))
+
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x, scan_end):
+        H = self.backbone(x)
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+        H = H[:scan_end]
+
+        depth_scores = self.classifier(H)
+
+        relevancy_scores = self.relevancy_classifier(H)
+        rel_prediction = self.sigmoid(relevancy_scores)
+        Y_hat_rel = torch.ge(rel_prediction, 0.5).float()
+
+        MASKING_VALUE = -1e+10 if depth_scores.dtype == torch.float32 else -1e+4
+        important_mask = torch.where(
+            (self.depth_range[0].item() < depth_scores) & (depth_scores < self.depth_range[1].item()), 1,
+            MASKING_VALUE)
+
+        important_mask = F.softmax(important_mask.T, dim=1)
+        important_vector = torch.mm(important_mask, H)
+        tumor_score = self.tumor_classifier(important_vector)
+        prediction = self.sigmoid(tumor_score)
+        Y_hat = torch.ge(prediction, 0.5).float()
+
+        return depth_scores, tumor_score, Y_hat, relevancy_scores, Y_hat_rel

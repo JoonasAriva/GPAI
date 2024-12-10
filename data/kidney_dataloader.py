@@ -63,7 +63,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
         if roll_slices:
             center_crop = center_crop
         self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))  # 500
-
+        self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop - 2), method="end", constant_values=0)
         self.resizer = Resize(spatial_size=512, size_mode="longest")
         print("PLANE: ", plane)
         print("CROP SIZE: ", center_crop)
@@ -216,7 +216,10 @@ class KidneyDataloader(torch.utils.data.Dataset):
             return patches_final, y, (case_id, nth_slice, x)
             # x = remove_empty_tiles(x)
 
-        return x, y, (case_id, nth_slice, z_spacing)
+        height_before_padding = x.shape[-1]
+        x = self.padder_z(x).as_tensor()
+
+        return x, y, (case_id, nth_slice, z_spacing,height_before_padding)
 
 
 class AbdomenAtlasLoader(torch.utils.data.Dataset):
