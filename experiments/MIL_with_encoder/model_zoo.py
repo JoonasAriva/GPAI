@@ -921,7 +921,7 @@ class TwoStageCompass(ResNetDepth):
         self.tumor_classifier = nn.Linear(512, 1)
         self.relevancy_classifier = nn.Linear(512, 1)
 
-        self.depth_range = nn.Parameter(torch.Tensor([-0.5, 0.5]))
+        self.depth_range = nn.Parameter(torch.Tensor([-0.2, 0.2]))
 
         self.sigmoid = nn.Sigmoid()
 

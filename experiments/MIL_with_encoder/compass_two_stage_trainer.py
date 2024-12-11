@@ -133,7 +133,8 @@ class TrainerCompassTwoStage:
                 position_scores, tumor_score, Y_hat, relevancy_scores, Y_hat_rel = model.forward(data, scan_end=meta[3])
 
                 rel_labels = torch.where(
-                    (model.depth_range[0] < position_scores) & (position_scores < model.depth_range[1]), 1, 0)
+                    (model.depth_range[0].item() < position_scores) & (position_scores < model.depth_range[1].item()),
+                    1, 0)
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
@@ -146,9 +147,15 @@ class TrainerCompassTwoStage:
                                                                 rel_labels=rel_labels.float())
                 range = model.depth_range[1] - model.depth_range[0]
                 range_loss = torch.max(torch.Tensor([0]).cuda(), -1 * range).sum() + torch.max(
-                    torch.Tensor([0.1]).cuda() - range, torch.Tensor([0]).cuda()).sum() + torch.max(
-                    range - torch.Tensor([2]).cuda(), torch.Tensor([0]).cuda()).sum()
+                    torch.Tensor([0.2]).cuda() - range, torch.Tensor([0]).cuda()).sum() + torch.max(
+                    range - torch.Tensor([1]).cuda(), torch.Tensor([0]).cuda()).sum()
 
+                max_pos = torch.max(position_scores).item()
+                min_pos = torch.min(position_scores).item()
+
+                range_loss2 = torch.max(model.depth_range[1] - max_pos, torch.Tensor([0]).cuda()).sum() + torch.min(
+                    model.depth_range[0] - min_pos, torch.Tensor([0]).cuda()).abs().sum()
+                range_loss += range_loss2
                 loss_time = time.time() - time_loss
                 loss_times.append(loss_time)
                 total_loss = (d_loss + cls_loss + rel_loss + range_loss) / self.update_freq
