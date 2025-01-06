@@ -1,3 +1,5 @@
+import random
+
 import torch
 import torch.nn.functional as F
 
@@ -95,39 +97,44 @@ class ScoreCAM_for_attention(BaseCAM):
         super().__init__(model_dict)
         self.classifier_score = wrt_classifier_score
 
-    def forward(self, input, retain_graph=False):
+    def forward(self, input, scan_end, depth_scores, retain_graph=False, tumor=True):
 
         b, c, h, w = input.size()
 
-
         self.model_arch.zero_grad()
-        Y_prob, Y_hat, unnorm_attention, cls_scores = self.model_arch(input, return_unnorm_attention=True,
-                                                                      full_pass=True)
+        position_scores, tumor_score, rel_scores = self.model_arch(input, scan_end=scan_end, depth_scores=depth_scores,
+                                                                   cam=True)
 
+        rel_labels = torch.where(
+            (self.model_arch.depth_range[0].item() < position_scores) & (
+                    position_scores < self.model_arch.depth_range[1].item()),
+            1, 0)
 
-        if torch.isnan(unnorm_attention).any():
-            print("unorm attention contains nans")
+        rel_labels = rel_labels.cpu().flatten()  # .argsort()
 
-        top_att = unnorm_attention.cpu().flatten().argsort()
-        important_slice_indices = top_att[-6:]  # we visualize 6 biggest
-        print("important slices:", important_slice_indices.shape)
+        imp = torch.where(rel_labels == 1)[0]
+        non_imp = torch.where(rel_labels == 0)[0]
 
+        imp = imp[torch.randperm(imp.size()[0])]
+        non_imp = non_imp[torch.randperm(imp.size()[0])]
 
+        imp = imp[:3]
+        non_imp = non_imp[:3]
+        important_slice_indices = torch.cat((imp, non_imp), 0)
+        print(important_slice_indices, important_slice_indices.shape)
+        # important_slice_indices = top_att[-6:]  # we visualize 6 biggest
 
         activations = self.activations['value']
         b, k, u, v = activations.size()
         activations = activations[important_slice_indices]
-
-        print("activations shape: ", activations.shape)
-        print("k value:", k)
 
         score_saliency_map = torch.zeros((6, h, w))
 
         if torch.cuda.is_available():
             activations = activations.cuda()
             score_saliency_map = score_saliency_map.cuda()
-        print("all acts: ", activations.shape)
-        print("debug input shape: ", input.shape)
+        maxest_item = -100
+        minest_item = 100
         with torch.no_grad():
             for i in range(k):
 
@@ -137,7 +144,7 @@ class ScoreCAM_for_attention(BaseCAM):
                 saliency_map = F.interpolate(saliency_map, size=(h, w), mode='bilinear', align_corners=False)
                 # print("sal map, activcations in loop: ", saliency_map.shape)
                 # normalize to 0-1
-                scorecam_base = torch.zeros_like(torch.squeeze(saliency_map))
+                score_saliency_map = torch.zeros_like(torch.squeeze(saliency_map))
 
                 min_per_channel = saliency_map.min(dim=2).values.min(dim=2).values.view(-1, 1, 1, 1)
                 max_per_channel = saliency_map.max(dim=2).values.max(dim=2).values.view(-1, 1, 1, 1)
@@ -152,43 +159,58 @@ class ScoreCAM_for_attention(BaseCAM):
                     print("norm saliency map contains nans: ")
                 filtered_input = input[important_slice_indices] * norm_saliency_map
 
-                _, _, new_attention = self.model_arch(filtered_input, return_unnorm_attention=True,
-                                                      scorecam_wrt_classifier_score=self.classifier_score)
+                position_scores, new_tumor_score, new_rel_score = self.model_arch(filtered_input,
+                                                                                  depth_scores=depth_scores, scan_end=6,
+                                                                                  cam=True)
 
-                # output = F.softmax(output)
-                new_attention = torch.squeeze(new_attention).view(-1, 1, 1)
+                if tumor:
+                    score = new_tumor_score
+                else:
+                    score = new_rel_score
+
+                new_attention = torch.squeeze(score).view(-1, 1, 1)
+
                 if torch.isnan(filtered_input).any():
                     print("filtered input contains nans: ")
 
                 if torch.isnan(new_attention).any():
                     print("new attention contains nans: ")
                     print(new_attention)
+                maxitem = torch.max(new_attention).item()
+                minitem = torch.min(new_attention).item()
 
-                scorecam_base += new_attention * torch.squeeze(saliency_map)
-                score_saliency_map += scorecam_base
+                if maxitem > maxest_item:
+                    maxest_item = maxitem
+                if minitem < minest_item:
+                    minest_item = minitem
+                score_saliency_map += new_attention * torch.squeeze(saliency_map)
 
-        #print("nan after loop?: ", torch.isnan(score_saliency_map).any())
-
-
-        score_saliency_map = F.relu(score_saliency_map)
+        if torch.isnan(score_saliency_map).any():
+            print("score sal map contains nans: ")
+            print(score_saliency_map)
+        # print("nan after loop?: ", torch.isnan(score_saliency_map).any())
+        print("looking for tumor?: ", tumor)
+        print("max and min:", maxest_item, minest_item)
+        if tumor:
+            score_saliency_map = F.relu(score_saliency_map)
 
         min_per_channel = score_saliency_map.min(dim=1).values.min(dim=1).values.view(-1, 1, 1)
 
         max_per_channel = score_saliency_map.max(dim=1).values.max(dim=1).values.view(-1, 1, 1)
 
-
         # good_activations = good_activations.view(-1)
 
+        if torch.isnan(score_saliency_map).any():
+            print("score sal map contains nans2: ")
+            print(score_saliency_map)
+
         score_saliency_map = (score_saliency_map - min_per_channel) / (max_per_channel - min_per_channel)
-        print("nan after final normalization?: ", torch.isnan(score_saliency_map).any())
-        # print("nr of good activations: ", len(good_activations))
-        # all_slices_saliency_map[idx, :, :] = score_saliency_map
 
-        _, _, individual_predictions = self.model_arch(input[important_slice_indices],
-                                                       scorecam_wrt_classifier_score=True)
+        if torch.isnan(score_saliency_map).any():
+            print("score sal map contains nans3: ")
+            print(score_saliency_map)
 
+        return score_saliency_map, important_slice_indices, tumor_score, rel_scores[important_slice_indices]
 
-        return score_saliency_map, Y_hat, unnorm_attention, cls_scores
-
-    def __call__(self, input, retain_graph=False):
-        return self.forward(input, retain_graph)
+    def __call__(self, input, scan_end, depth_scores, retain_graph=False, tumor=True):
+        return self.forward(input, scan_end, depth_scores, retain_graph, tumor)

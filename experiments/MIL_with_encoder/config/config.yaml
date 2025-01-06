@@ -14,7 +14,8 @@ training:
 
 model:
   classes: 1
-  name: 'compass_modelV3'
+  name: 'twostagecompassV3'
+  fixed_compass: True
   pretrained_imagenet: True
   pretrained_depth: False
   neighbour_range: 0

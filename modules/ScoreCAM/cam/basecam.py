@@ -3,8 +3,27 @@ Part of code borrows from https://github.com/1Konny/gradcam_plus_plus-pytorch
 '''
 
 import torch
-from modules.ScoreCAM.utils import find_alexnet_layer, find_vgg_layer, find_resnet_layer, find_densenet_layer, \
-    find_squeezenet_layer, find_layer, find_googlenet_layer, find_mobilenet_layer, find_shufflenet_layer
+
+
+def find_layer(arch, target_layer_name):
+    """Find target layer to calculate CAM.
+
+        : Args:
+            - **arch - **: Self-defined architecture.
+            - **target_layer_name - ** (str): Name of target class.
+
+        : Return:
+            - **target_layer - **: Found layer. This layer will be hooked to get forward/backward pass information.
+    """
+
+    # if target_layer_name.split('_') not in arch._modules.keys():
+    # raise Exception("Invalid target layer name.")
+    try:
+        target_layer = arch._modules[target_layer_name]
+    except:
+        target_layer = arch.get_submodule(target_layer_name)
+    return target_layer
+
 
 class BaseCAM(object):
     """ Base class for Class activation mapping.
@@ -18,46 +37,29 @@ class BaseCAM(object):
     def __init__(self, model_dict):
         model_type = model_dict['type']
         layer_name = model_dict['layer_name']
-        
+
         self.model_arch = model_dict['arch']
         self.model_arch.eval()
         if torch.cuda.is_available():
-          self.model_arch.cuda()
+            self.model_arch.cuda()
         self.gradients = dict()
         self.activations = dict()
 
         def backward_hook(module, grad_input, grad_output):
             if torch.cuda.is_available():
-              self.gradients['value'] = grad_output[0].cuda()
+                self.gradients['value'] = grad_output[0].cuda()
             else:
-              self.gradients['value'] = grad_output[0]
+                self.gradients['value'] = grad_output[0]
             return None
 
         def forward_hook(module, input, output):
             if torch.cuda.is_available():
-              self.activations['value'] = output.cuda()
+                self.activations['value'] = output.cuda()
             else:
-              self.activations['value'] = output
+                self.activations['value'] = output
             return None
 
-        if 'vgg' in model_type.lower():
-            self.target_layer = find_vgg_layer(self.model_arch, layer_name)
-        elif 'resnet' in model_type.lower():
-            self.target_layer = find_resnet_layer(self.model_arch, layer_name)
-        elif 'densenet' in model_type.lower():
-            self.target_layer = find_densenet_layer(self.model_arch, layer_name)
-        elif 'alexnet' in model_type.lower():
-            self.target_layer = find_alexnet_layer(self.model_arch, layer_name)
-        elif 'squeezenet' in model_type.lower():
-            self.target_layer = find_squeezenet_layer(self.model_arch, layer_name)
-        elif 'googlenet' in model_type.lower():
-            self.target_layer = find_googlenet_layer(self.model_arch, layer_name)
-        elif 'shufflenet' in model_type.lower():
-            self.target_layer = find_shufflenet_layer(self.model_arch, layer_name)
-        elif 'mobilenet' in model_type.lower():
-            self.target_layer = find_mobilenet_layer(self.model_arch, layer_name)
-        else:
-            self.target_layer = find_layer(self.model_arch, layer_name)
+        self.target_layer = find_layer(self.model_arch, layer_name)
 
         self.target_layer.register_forward_hook(forward_hook)
         self.target_layer.register_full_backward_hook(backward_hook)

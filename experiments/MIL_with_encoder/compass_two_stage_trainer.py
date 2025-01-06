@@ -24,16 +24,21 @@ def calculate_classification_error(Y, Y_hat):
 
 
 class TwoStageCompassLoss(nn.Module):
-    def __init__(self, step):
+    def __init__(self, step, fixed_compass=False):
         super().__init__()
-
+        self.fixed_compass = fixed_compass
         self.cls_loss = torch.nn.BCEWithLogitsLoss()
+        pos_weight = torch.tensor([2])
+        self.rel_loss = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         self.depth_loss = DepthLossV2(step=step)
 
     def forward(self, depth_predictions, z_spacing, nth_slice, tumor_prob, bag_label, rel_prob, rel_labels):
-        d_loss = self.depth_loss(depth_predictions, z_spacing, nth_slice)
+        if not self.fixed_compass:
+            d_loss = self.depth_loss(depth_predictions, z_spacing, nth_slice)
+        else:
+            d_loss = torch.tensor([0]).cuda()
         cls_loss = self.cls_loss(tumor_prob, bag_label)
-        rel_loss = self.cls_loss(rel_prob, rel_labels)
+        rel_loss = self.rel_loss(rel_prob, rel_labels)
 
         return d_loss, cls_loss, rel_loss
 
@@ -67,6 +72,13 @@ class TrainerCompassTwoStage:
                                          pd.read_csv(path + "slice_info_kits_kirc_test.csv"),
                                          pd.read_csv(path + "slice_info_tuh_test_for_test.csv")
                                          ])
+        if cfg.model.fixed_compass:
+            self.fixed_compass = True
+            compass_path = "/users/arivajoo/GPAI/experiments/MIL_with_encoder/"
+            self.compass_scores = pd.concat([pd.read_csv(compass_path + "fixed_depth_scores_test.csv"),
+                                             pd.read_csv(compass_path + "fixed_depth_scores_train.csv")])
+        else:
+            self.fixed_compass = False
 
     def calculate_classification_error(self, Y, Y_hat):
         Y = Y.float()
@@ -127,14 +139,19 @@ class TrainerCompassTwoStage:
             data = data.to(self.device, dtype=torch.float16, non_blocking=True)
             bag_label = bag_label.to(self.device, non_blocking=True)
 
+            if self.fixed_compass:
+                case_id = meta[0][0]
+                depth_scores = torch.Tensor(
+                    self.compass_scores.loc[self.compass_scores["case_id"] == case_id, "weights"].to_numpy()).cuda()
+                depth_scores = torch.unsqueeze(depth_scores, 1)
+            else:
+                depth_scores = None
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
-                position_scores, tumor_score, Y_hat, relevancy_scores, Y_hat_rel = model.forward(data, scan_end=meta[3])
-
-                rel_labels = torch.where(
-                    (model.depth_range[0].item() < position_scores) & (position_scores < model.depth_range[1].item()),
-                    1, 0)
+                position_scores, tumor_score, Y_hat, relevancy_scores, rel_labels = model.forward(data,
+                                                                                                  depth_scores=depth_scores,
+                                                                                                  scan_end=meta[3])
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
@@ -146,19 +163,21 @@ class TrainerCompassTwoStage:
                                                                 rel_prob=relevancy_scores,
                                                                 rel_labels=rel_labels.float())
                 range = model.depth_range[1] - model.depth_range[0]
-                range_loss = torch.max(torch.Tensor([0]).cuda(), -1 * range).sum() + torch.max(
-                    torch.Tensor([0.2]).cuda() - range, torch.Tensor([0]).cuda()).sum() + torch.max(
-                    range - torch.Tensor([1]).cuda(), torch.Tensor([0]).cuda()).sum()
+                range_loss = torch.max(torch.Tensor([0]).cuda(), -1 * range).sum() \
+                             + torch.max(torch.Tensor([0.3]).cuda() - range, torch.Tensor([0]).cuda()).sum() \
+                             + torch.max(range - torch.Tensor([1]).cuda(), torch.Tensor([0]).cuda()).sum()
+                # 1) generate loss if range gets flipped
+                # 2) generate loss if range get smaller than 0.2
+                # 3) generate loss if range gets bigger than 1
+            max_pos = torch.max(position_scores).item()
+            min_pos = torch.min(position_scores).item()
 
-                max_pos = torch.max(position_scores).item()
-                min_pos = torch.min(position_scores).item()
-
-                range_loss2 = torch.max(model.depth_range[1] - max_pos, torch.Tensor([0]).cuda()).sum() + torch.min(
-                    model.depth_range[0] - min_pos, torch.Tensor([0]).cuda()).abs().sum()
-                range_loss += range_loss2
-                loss_time = time.time() - time_loss
-                loss_times.append(loss_time)
-                total_loss = (d_loss + cls_loss + rel_loss + range_loss) / self.update_freq
+            range_loss2 = torch.max(model.depth_range[1] - max_pos, torch.Tensor([0]).cuda()).sum() + torch.min(
+                model.depth_range[0] - min_pos, torch.Tensor([0]).cuda()).abs().sum()
+            range_loss += range_loss2
+            loss_time = time.time() - time_loss
+            loss_times.append(loss_time)
+            total_loss = (d_loss + cls_loss + rel_loss + range_loss) / self.update_freq
 
             error = calculate_classification_error(bag_label, Y_hat)
             epoch_error += error

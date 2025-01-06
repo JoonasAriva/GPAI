@@ -81,32 +81,46 @@ def main(cfg: DictConfig):
     if torch.cuda.is_available():
         model.cuda()
 
-    optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
-                           weight_decay=cfg.training.weight_decay)
+    if cfg.experiment == 'compass_twostage':
+
+        boundary_name = ['depth_range']
+        boundary_params = [param for name, param in model.named_parameters() if name in boundary_name]
+        base_params = [param for name, param in model.named_parameters() if name not in boundary_name]
+
+        params = [
+            {"params": [*base_params], "lr": cfg.training.learning_rate},  # First group
+            {"params": boundary_params, "lr": cfg.training.learning_rate * 10}  # Second group
+        ]
+        optimizer = optim.Adam(params, lr=cfg.training.learning_rate, betas=(0.9, 0.999),
+                               weight_decay=cfg.training.weight_decay)
+    else:
+        optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
+                               weight_decay=cfg.training.weight_decay)
 
     number_of_epochs = cfg.training.epochs
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=int(
         number_of_epochs * steps_in_epoch / cfg.training.weight_update_freq),
-                                              pct_start=0.2, max_lr=cfg.training.learning_rate)
+                                              pct_start=0.2, max_lr=[cfg.training.learning_rate,
+                                                                     cfg.training.learning_rate * 10] if cfg.experiment == "compass_twostage" else cfg.training.learning_rate)
     if "checkpoint" in cfg.keys():
         optimizer.load_state_dict(torch.load(os.path.join(cfg.checkpoint, 'current_optimizer.pth')))
         scheduler.load_state_dict(torch.load(os.path.join(cfg.checkpoint, 'current_scheduler.pth')))
     # summary(model,input_size=(300,3,512,512))
 
-    if "twostage" in cfg.model.name:
-        loss_function = torch.nn.CrossEntropyLoss().cuda()
-        if "multi" in cfg.model.name:
-            trainer = TrainerTwoStageMulti(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function,
-                                           cfg=cfg,
-                                           steps_in_epoch=steps_in_epoch)
-        elif "two_heads" in cfg.model.name:
-            loss_function = torch.nn.BCEWithLogitsLoss().cuda()
-            trainer = TrainerTwoStageTwoHeads(optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
-                                              steps_in_epoch=steps_in_epoch)
-        else:
-            trainer = TrainerTwoStage(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
-                                      steps_in_epoch=steps_in_epoch)
-    elif cfg.experiment == "depth":
+    # if "twostage" in cfg.model.name:
+    #     loss_function = torch.nn.CrossEntropyLoss().cuda()
+    #     if "multi" in cfg.model.name:
+    #         trainer = TrainerTwoStageMulti(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function,
+    #                                        cfg=cfg,
+    #                                        steps_in_epoch=steps_in_epoch)
+    #     elif "two_heads" in cfg.model.name:
+    #         loss_function = torch.nn.BCEWithLogitsLoss().cuda()
+    #         trainer = TrainerTwoStageTwoHeads(optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+    #                                           steps_in_epoch=steps_in_epoch)
+    #     else:
+    #         trainer = TrainerTwoStage(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+    #                                   steps_in_epoch=steps_in_epoch)
+    if cfg.experiment == "depth":
         loss_function = DepthLossV2(step=0.01).cuda()
         trainer = TrainerDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                                steps_in_epoch=steps_in_epoch)
@@ -115,7 +129,7 @@ def main(cfg: DictConfig):
         trainer = TrainerCompass(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                                  steps_in_epoch=steps_in_epoch)
     elif cfg.experiment == "compass_twostage":
-        loss_function = TwoStageCompassLoss(step=0.01).cuda()
+        loss_function = TwoStageCompassLoss(step=0.01, fixed_compass=cfg.model.fixed_compass).cuda()
         trainer = TrainerCompassTwoStage(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                                          steps_in_epoch=steps_in_epoch)
     else:
