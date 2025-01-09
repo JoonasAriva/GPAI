@@ -15,7 +15,7 @@ from data.synth_dataloaders import SynthDataloader
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
     ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention, \
     MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2, ResNetDepth, TransDepth, CompassModel, \
-    CompassModelV2, TwoStageCompass, TwoStageCompassV2, TwoStageCompassV3
+    CompassModelV2, TwoStageCompass, TwoStageCompassV2, TwoStageCompassV3, TwoStageCompassV4
 
 
 def prepare_dataloader(cfg: DictConfig):
@@ -130,6 +130,8 @@ def pick_model(cfg: DictConfig):
         model = TwoStageCompassV2(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
     elif cfg.model.name == 'twostagecompassV3':
         model = TwoStageCompassV3(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
+    elif cfg.model.name == 'twostagecompassV4':
+        model = TwoStageCompassV4(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
     return model
 
 

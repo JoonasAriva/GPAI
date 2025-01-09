@@ -14,7 +14,7 @@ training:
 
 model:
   classes: 1
-  name: 'twostagecompassV3'
+  name: 'twostagecompassV4'
   fixed_compass: True
   pretrained_imagenet: True
   pretrained_depth: False
@@ -22,6 +22,8 @@ model:
   num_heads: 1
   inst_norm: True
   nr_of_blocks: 2
+  relevancy_head: True
+  progressive_sigmoid_scaling: True
 
 data:
   take_every_nth_slice: 3

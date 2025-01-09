@@ -23,6 +23,11 @@ def calculate_classification_error(Y, Y_hat):
     return error
 
 
+def calculate_scale_step(start_scale, end_scale, steps_per_epoch, epochs):
+    span = end_scale - start_scale
+    return span / (steps_per_epoch * epochs)
+
+
 class TwoStageCompassLoss(nn.Module):
     def __init__(self, step, fixed_compass=False):
         super().__init__()
@@ -32,19 +37,23 @@ class TwoStageCompassLoss(nn.Module):
         self.rel_loss = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         self.depth_loss = DepthLossV2(step=step)
 
-    def forward(self, depth_predictions, z_spacing, nth_slice, tumor_prob, bag_label, rel_prob, rel_labels):
+    def forward(self, depth_predictions, z_spacing, nth_slice, tumor_prob, bag_label, rel_prob=None, rel_labels=None):
         if not self.fixed_compass:
             d_loss = self.depth_loss(depth_predictions, z_spacing, nth_slice)
         else:
             d_loss = torch.tensor([0]).cuda()
         cls_loss = self.cls_loss(tumor_prob, bag_label)
-        rel_loss = self.rel_loss(rel_prob, rel_labels)
+        if rel_labels is not None:
+            rel_loss = self.rel_loss(rel_prob, rel_labels)
 
-        return d_loss, cls_loss, rel_loss
+            return d_loss, cls_loss, rel_loss
+        else:
+            return d_loss, cls_loss, torch.Tensor([0]).cuda()
 
 
 class TrainerCompassTwoStage:
-    def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None):
+    def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None,
+                 progressive_sigmoid_scaling=False):
 
         self.check = cfg.check
         self.device = torch.device("cuda")
@@ -58,6 +67,12 @@ class TrainerCompassTwoStage:
         self.important_slices_only = cfg.data.important_slices_only
         self.update_freq = cfg.training.weight_update_freq
         self.slice_level_supervision = cfg.data.slice_level_supervision
+        self.relevancy_head = cfg.model.relevancy_head
+        self.scaling = progressive_sigmoid_scaling
+
+        if self.scaling:
+            self.scale_step = calculate_scale_step(start_scale=20, end_scale=100, steps_per_epoch=self.steps_in_epoch,
+                                                   epochs=30)
         if cfg.data.no_lungs:
             path = '/scratch/project_465001111/ct_data/kidney/slice_statistics.csv'
             self.statistics = pd.read_csv(path)
@@ -160,20 +175,24 @@ class TrainerCompassTwoStage:
                 d_loss, cls_loss, rel_loss = self.loss_function(position_scores, z_spacing=meta[2].item(),
                                                                 nth_slice=meta[1].item(),
                                                                 tumor_prob=tumor_score, bag_label=bag_label.float(),
-                                                                rel_prob=relevancy_scores,
-                                                                rel_labels=rel_labels.float())
+                                                                rel_prob=relevancy_scores if self.relevancy_head else None,
+                                                                rel_labels=rel_labels.float() if self.relevancy_head else None)
                 range = model.depth_range[1] - model.depth_range[0]
                 range_loss = torch.max(torch.Tensor([0]).cuda(), -1 * range).sum() \
-                             + torch.max(torch.Tensor([0.3]).cuda() - range, torch.Tensor([0]).cuda()).sum() \
+                             + torch.max(torch.Tensor([0.5]).cuda() - range, torch.Tensor([0]).cuda()).sum() \
                              + torch.max(range - torch.Tensor([1]).cuda(), torch.Tensor([0]).cuda()).sum()
                 # 1) generate loss if range gets flipped
-                # 2) generate loss if range get smaller than 0.2
+                # 2) generate loss if range get smaller than 0.5
                 # 3) generate loss if range gets bigger than 1
             max_pos = torch.max(position_scores).item()
             min_pos = torch.min(position_scores).item()
 
             range_loss2 = torch.max(model.depth_range[1] - max_pos, torch.Tensor([0]).cuda()).sum() + torch.min(
                 model.depth_range[0] - min_pos, torch.Tensor([0]).cuda()).abs().sum()
+
+            # 1) generate loss if max position score is smaller than upper range parameter
+            # 2) vice versa, generate loss if min pos score is larger than lower range parameter
+            # in summary, range paramters should be inside maximum and minimum scores
             range_loss += range_loss2
             loss_time = time.time() - time_loss
             loss_times.append(loss_time)
@@ -189,6 +208,7 @@ class TrainerCompassTwoStage:
                 scaler.scale(total_loss).backward()
                 backprop_time = time.time() - time_backprop
                 backprop_times.append(backprop_time)
+
                 if (step) % self.update_freq == 0 or (step) == len(data_loader):
 
                     scaler.step(self.optimizer)
@@ -196,6 +216,9 @@ class TrainerCompassTwoStage:
                     if self.scheduler:
                         self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)
+
+                if self.scaling and model.scale < 100:  # for progressively steepening the sigmoid curve (100 is end value)
+                    model.scale += self.scale_step
 
             epoch_loss += total_loss.item() * self.update_freq
             depth_loss += d_loss.item() * self.update_freq
@@ -238,6 +261,8 @@ class TrainerCompassTwoStage:
         print(
             f"Span loss: {span_loss}, Range: {round(model.depth_range[0].item(), 3)}--{round(model.depth_range[1].item(), 3)}")
 
+        if self.scaling:
+            results["sigmoid_scale"] = model.scale
         results["epoch"] = epoch
         results["loss"] = epoch_loss
         results["depth_loss"] = depth_loss

@@ -1,5 +1,3 @@
-import random
-
 import torch
 import torch.nn.functional as F
 
@@ -116,7 +114,7 @@ class ScoreCAM_for_attention(BaseCAM):
         non_imp = torch.where(rel_labels == 0)[0]
 
         imp = imp[torch.randperm(imp.size()[0])]
-        non_imp = non_imp[torch.randperm(imp.size()[0])]
+        non_imp = non_imp[torch.randperm(non_imp.size()[0])]
 
         imp = imp[:3]
         non_imp = non_imp[:3]
@@ -140,8 +138,14 @@ class ScoreCAM_for_attention(BaseCAM):
 
                 # upsampling
                 saliency_map = torch.unsqueeze(activations[:, i, :, :], 1)
-
+                if saliency_map.max() == saliency_map.min():
+                    print(i, "min = max, skipping")
+                    min_per_channel = saliency_map.min(dim=2).values.min(dim=2).values.view(-1, 1, 1, 1)
+                    max_per_channel = saliency_map.max(dim=2).values.max(dim=2).values.view(-1, 1, 1, 1)
+                    print("min and max per channel", min_per_channel, max_per_channel)
+                    continue
                 saliency_map = F.interpolate(saliency_map, size=(h, w), mode='bilinear', align_corners=False)
+
                 # print("sal map, activcations in loop: ", saliency_map.shape)
                 # normalize to 0-1
                 score_saliency_map = torch.zeros_like(torch.squeeze(saliency_map))
@@ -191,13 +195,13 @@ class ScoreCAM_for_attention(BaseCAM):
         # print("nan after loop?: ", torch.isnan(score_saliency_map).any())
         print("looking for tumor?: ", tumor)
         print("max and min:", maxest_item, minest_item)
-        if tumor:
-            score_saliency_map = F.relu(score_saliency_map)
+        # if tumor:
+        #    score_saliency_map = F.relu(score_saliency_map)
 
         min_per_channel = score_saliency_map.min(dim=1).values.min(dim=1).values.view(-1, 1, 1)
 
         max_per_channel = score_saliency_map.max(dim=1).values.max(dim=1).values.view(-1, 1, 1)
-
+        print("mins and maxs per channel (6):", min_per_channel, max_per_channel)
         # good_activations = good_activations.view(-1)
 
         if torch.isnan(score_saliency_map).any():

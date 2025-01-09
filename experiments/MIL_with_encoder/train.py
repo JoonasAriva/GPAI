@@ -17,10 +17,7 @@ from omegaconf import OmegaConf, DictConfig
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
 
-from trainer_two_stage import TrainerTwoStage
 from trainer import Trainer
-from trainer_multi_two_stage import TrainerTwoStageMulti
-from trainer_two_stage_two_heads import TrainerTwoStageTwoHeads
 from depth_trainer import TrainerDepth, DepthLossV2, CompassLoss
 from compass_trainer import TrainerCompass
 from compass_two_stage_trainer import TwoStageCompassLoss, TrainerCompassTwoStage
@@ -88,11 +85,12 @@ def main(cfg: DictConfig):
         base_params = [param for name, param in model.named_parameters() if name not in boundary_name]
 
         params = [
-            {"params": [*base_params], "lr": cfg.training.learning_rate},  # First group
-            {"params": boundary_params, "lr": cfg.training.learning_rate * 10}  # Second group
+            {"params": [*base_params], "lr": cfg.training.learning_rate, 'weight_decay': cfg.training.weight_decay},
+            # First group
+            {"params": boundary_params, "lr": cfg.training.learning_rate * 10, 'weight_decay': 0}
+            # Second group, no decay for boundary parameters
         ]
-        optimizer = optim.Adam(params, lr=cfg.training.learning_rate, betas=(0.9, 0.999),
-                               weight_decay=cfg.training.weight_decay)
+        optimizer = optim.Adam(params, lr=cfg.training.learning_rate, betas=(0.9, 0.999))
     else:
         optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
                                weight_decay=cfg.training.weight_decay)
@@ -131,7 +129,8 @@ def main(cfg: DictConfig):
     elif cfg.experiment == "compass_twostage":
         loss_function = TwoStageCompassLoss(step=0.01, fixed_compass=cfg.model.fixed_compass).cuda()
         trainer = TrainerCompassTwoStage(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
-                                         steps_in_epoch=steps_in_epoch)
+                                         steps_in_epoch=steps_in_epoch,
+                                         progressive_sigmoid_scaling=cfg.model.progressive_sigmoid_scaling)
     else:
         loss_function = torch.nn.BCEWithLogitsLoss().cuda()
         trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
