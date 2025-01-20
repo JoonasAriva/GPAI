@@ -37,18 +37,17 @@ class TwoStageCompassLoss(nn.Module):
         self.rel_loss = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         self.depth_loss = DepthLossV2(step=step)
 
-    def forward(self, depth_predictions, z_spacing, nth_slice, tumor_prob, bag_label, rel_prob=None, rel_labels=None):
+    def forward(self, depth_predictions, z_spacing, nth_slice, tumor_prob, bag_label, out_of_range_rel, in_range_rel):
         if not self.fixed_compass:
             d_loss = self.depth_loss(depth_predictions, z_spacing, nth_slice)
         else:
             d_loss = torch.tensor([0]).cuda()
         cls_loss = self.cls_loss(tumor_prob, bag_label)
-        if rel_labels is not None:
-            rel_loss = self.rel_loss(rel_prob, rel_labels)
 
-            return d_loss, cls_loss, rel_loss
-        else:
-            return d_loss, cls_loss, torch.Tensor([0]).cuda()
+        rel_probs = torch.cat((out_of_range_rel, in_range_rel))
+        rel_labels = torch.Tensor([[0], [1]]).cuda()
+        rel_loss = self.rel_loss(rel_probs, rel_labels)
+        return d_loss, cls_loss, rel_loss
 
 
 class TrainerCompassTwoStage:
@@ -164,19 +163,21 @@ class TrainerCompassTwoStage:
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
-                position_scores, tumor_score, Y_hat, relevancy_scores, rel_labels = model.forward(data,
-                                                                                                  depth_scores=depth_scores,
-                                                                                                  scan_end=meta[3])
+                position_scores, tumor_score, Y_hat, out_of_range_relevancy_scores, in_range_relevancy_scores = model.forward(
+                    data,
+                    depth_scores=depth_scores,
+                    scan_end=meta[3])
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
                 time_loss = time.time()
+
                 d_loss, cls_loss, rel_loss = self.loss_function(position_scores, z_spacing=meta[2].item(),
                                                                 nth_slice=meta[1].item(),
                                                                 tumor_prob=tumor_score, bag_label=bag_label.float(),
-                                                                rel_prob=relevancy_scores if self.relevancy_head else None,
-                                                                rel_labels=rel_labels.float() if self.relevancy_head else None)
+                                                                out_of_range_rel=out_of_range_relevancy_scores,
+                                                                in_range_rel=in_range_relevancy_scores)
                 range = model.depth_range[1] - model.depth_range[0]
                 range_loss = torch.max(torch.Tensor([0]).cuda(), -1 * range).sum() \
                              + torch.max(torch.Tensor([0.5]).cuda() - range, torch.Tensor([0]).cuda()).sum() \

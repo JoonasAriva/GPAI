@@ -14,7 +14,7 @@ training:
 
 model:
   classes: 1
-  name: 'twostagecompassV4'
+  name: 'twostagecompassV5'
   fixed_compass: True
   pretrained_imagenet: True
   pretrained_depth: False
@@ -36,4 +36,5 @@ data:
   no_lungs: False
   patchify: False
   slice_level_supervision: 0
+  random_experiment: True
 check: False

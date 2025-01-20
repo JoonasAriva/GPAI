@@ -1,3 +1,4 @@
+import random
 import sys
 from glob import glob
 
@@ -44,7 +45,8 @@ class KidneyDataloader(torch.utils.data.Dataset):
                  augmentations: callable = None, as_rgb: bool = False,
                  sample_shifting: bool = False, plane: str = 'axial',
                  center_crop: int = 120, roll_slices=False, model_type="2D", generate_spheres: bool = False,
-                 patchify: bool = False, patch_size: int = 128, no_lungs: bool = False):
+                 patchify: bool = False, patch_size: int = 128, no_lungs: bool = False,
+                 random_experiment: bool = False):
         super().__init__()
         self.roll_slices = roll_slices
         self.as_rgb = as_rgb
@@ -79,6 +81,8 @@ class KidneyDataloader(torch.utils.data.Dataset):
         self.img_paths = control + tumor
         self.labels = control_labels + tumor_labels
 
+        if random_experiment:
+            random.shuffle(self.labels)
         print("Data length: ", len(self.img_paths), "Label length: ", len(self.labels))
         print(
             f"control: {len(control)}, tumor: {len(tumor)}")
@@ -219,7 +223,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
         height_before_padding = x.shape[-1]
         x = self.padder_z(x).as_tensor()
 
-        return x, y, (case_id, nth_slice, z_spacing,height_before_padding)
+        return x, y, (case_id, nth_slice, z_spacing, height_before_padding,path)
 
 
 class AbdomenAtlasLoader(torch.utils.data.Dataset):
@@ -238,7 +242,7 @@ class AbdomenAtlasLoader(torch.utils.data.Dataset):
 
         self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))  # 500
         self.padder = SpatialPad(spatial_size=(512, 512, -1), mode="minimum")
-        self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop-2), method="end",constant_values=0)
+        self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop - 2), method="end", constant_values=0)
 
         self.resizer = Resize(spatial_size=512, size_mode="longest")
         print("PLANE: ", plane)
@@ -321,7 +325,6 @@ class AbdomenAtlasLoader(torch.utils.data.Dataset):
         x = normalize_scan(x, single_channel=not self.as_rgb, model_type=self.model_type, remove_bones=False)
         height_before_padding = x.shape[-1]
         x = self.padder_z(x).as_tensor()
-
 
         bag_label = torch.Tensor([1])  # placeholder
         return x, bag_label, (case_id, nth_slice, z_spacing, height_before_padding)

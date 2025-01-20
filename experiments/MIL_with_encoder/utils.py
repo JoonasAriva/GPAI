@@ -15,7 +15,7 @@ from data.synth_dataloaders import SynthDataloader
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
     ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention, \
     MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2, ResNetDepth, TransDepth, CompassModel, \
-    CompassModelV2, TwoStageCompass, TwoStageCompassV2, TwoStageCompassV3, TwoStageCompassV4
+    CompassModelV2, TwoStageCompass, TwoStageCompassV2, TwoStageCompassV3, TwoStageCompassV4, TwoStageCompassV5
 
 
 def prepare_dataloader(cfg: DictConfig):
@@ -31,7 +31,7 @@ def prepare_dataloader(cfg: DictConfig):
             'no_lungs': cfg.data.no_lungs}
         train_dataset = KidneyDataloader(type="train",
                                          augmentations=None if not cfg.data.data_augmentations else transforms,
-                                         **dataloader_params)
+                                         **dataloader_params, random_experiment=cfg.data.random_experiment)
         test_dataset = KidneyDataloader(type="test", **dataloader_params)
 
         loader_kwargs = {'num_workers': 7, 'pin_memory': True} if torch.cuda.is_available() else {}
@@ -132,6 +132,8 @@ def pick_model(cfg: DictConfig):
         model = TwoStageCompassV3(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
     elif cfg.model.name == 'twostagecompassV4':
         model = TwoStageCompassV4(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
+    elif cfg.model.name == 'twostagecompassV5':
+        model = TwoStageCompassV5(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
     return model
 
 
