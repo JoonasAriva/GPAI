@@ -3,13 +3,14 @@ import os
 from typing import List
 
 import matplotlib
+import nibabel as nib
 import numpy as np
 import raster_geometry as rg
 import torch
 import torch.nn.functional as F
 from scipy import ndimage as ndi
 from skimage import morphology
-import nibabel as nib
+
 matplotlib.rcParams['animation.embed_limit'] = 2 ** 128
 
 
@@ -151,12 +152,16 @@ def set_orientation(x, path, plane):
         raise ValueError('plane is not correctly specified')
 
     return x
+
+
 def set_orientation_nib(x):
     orig_ornt = nib.io_orientation(x.affine)
     targ_ornt = nib.orientations.axcodes2ornt("RAS")
     transform = nib.orientations.ornt_transform(orig_ornt, targ_ornt)
     x = x.as_reoriented(transform)
     return x
+
+
 def downsample_scan(x, scale_factor=0.5):
     x = torch.from_numpy(x.copy())
     x = F.interpolate(torch.unsqueeze(torch.unsqueeze(x, 0), 0), scale_factor=scale_factor,
@@ -182,18 +187,19 @@ def normalize_scan(x, single_channel=False, model_type="2D", remove_bones=False)
         return norm_x
     else:
 
-        norm_x = (clipped_x - torch.mean(clipped_x)) / (torch.std(clipped_x) + 1)  # mean 0, std 1 norm
+        norm_x = (clipped_x - np.mean(clipped_x)) / (np.std(clipped_x) + 1)  # mean 0, std 1 norm
         # norm_x = np.squeeze(norm_x)
         return norm_x
 
+
 def remove_empty_tiles(data):
-    #3, 128, 128, 1520
+    # 3, 128, 128, 1520
     # find minimum values per patch
     min_per_row = torch.min(data, dim=1)[0]  # Shape becomes [100, 512]
     min_per_channel = torch.min(min_per_row, dim=1)[0]
     min_values = torch.min(min_per_channel, dim=0)[0]
 
-    mask = data < min_values + 0.05 # filter out pixels with small values
+    mask = data < min_values + 0.05  # filter out pixels with small values
     small_vals = torch.sum(mask, dim=(0, 1, 2))
     all_vals = data.shape[:3].numel()
     relative_percentage_of_small_vals = small_vals / all_vals
@@ -201,6 +207,7 @@ def remove_empty_tiles(data):
 
     filtered_data = data[:, :, :, ~filter_mask]
     return filtered_data
+
 
 # def custom_highlight_function(x, segmentation):
 #
@@ -213,9 +220,9 @@ def remove_empty_tiles(data):
 #     return x
 
 
-def get_kidney_datasets(type: str, no_lungs: bool= False):
+def get_kidney_datasets(type: str, no_lungs: bool = False):
     # type = train, test
-    #base_path = '/gpfs/space/projects/BetterMedicine/joonas/'  # hpc
+    # base_path = '/gpfs/space/projects/BetterMedicine/joonas/'  # hpc
 
     if no_lungs:
         base_path = '/scratch/project_465001111/ct_data/'
@@ -224,6 +231,7 @@ def get_kidney_datasets(type: str, no_lungs: bool= False):
 
     tuh_train_data_path = base_path + 'kidney/tuh_train/'
     tuh_test_data_path = base_path + 'kidney/tuh_test/'
+    parnu_data_path = base_path + 'kidney/parnu/'
     other_datasets_path = base_path + 'kidney/data'
 
     all_controls = []
@@ -266,11 +274,11 @@ def remove_table_3d(img):
     # remove small objects not connected to the main body. 40000 pixels per slice seems to do the work for 512x512 resolution
     min_size = 40000 * img.shape[2]
     keep_mask = morphology.remove_small_objects(keep_mask, min_size=min_size)
-    #keep_mask = np.expand_dims(keep_mask, 0)
+    # keep_mask = np.expand_dims(keep_mask, 0)
 
     maskedimg = img.detach().clone()
     # specific fill value does not matter that much if you apply ct windowing afterwards
-    maskedimg[~keep_mask] = -1024 # put regular min negative value back
+    maskedimg[~keep_mask] = -1024  # put regular min negative value back
     end = time.time()
     # print("time: ",end-start)
     return maskedimg

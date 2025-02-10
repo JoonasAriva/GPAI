@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
-from utils import get_percentage_of_scans_from_dataframe
+from misc_utils import get_percentage_of_scans_from_dataframe
 import torch
 from sklearn.metrics import f1_score
 from depth_trainer import DepthLossV2
@@ -173,7 +173,8 @@ class TrainerCompassTwoStage:
 
                 time_loss = time.time()
 
-                d_loss, cls_loss, rel_loss = self.loss_function(position_scores, z_spacing=meta[2].item(),
+                d_loss, cls_loss, rel_loss = self.loss_function(position_scores, z_spacing=meta[2][2].item(),
+                                                                # 2nd meta is spacings, [2] is z spacing
                                                                 nth_slice=meta[1].item(),
                                                                 tumor_prob=tumor_score, bag_label=bag_label.float(),
                                                                 out_of_range_rel=out_of_range_relevancy_scores,
@@ -188,16 +189,18 @@ class TrainerCompassTwoStage:
             max_pos = torch.max(position_scores).item()
             min_pos = torch.min(position_scores).item()
 
-            range_loss2 = torch.max(model.depth_range[1] - max_pos, torch.Tensor([0]).cuda()).sum() + torch.min(
-                model.depth_range[0] - min_pos, torch.Tensor([0]).cuda()).abs().sum()
-
-            # 1) generate loss if max position score is smaller than upper range parameter
-            # 2) vice versa, generate loss if min pos score is larger than lower range parameter
-            # in summary, range paramters should be inside maximum and minimum scores
-            range_loss += range_loss2
+            # range_loss2 = torch.max(model.depth_range[1] - max_pos, torch.Tensor([0]).cuda()).sum() + torch.min(
+            #     model.depth_range[0] - min_pos, torch.Tensor([0]).cuda()).abs().sum()
+            #
+            # # 1) generate loss if max position score is smaller than upper range parameter
+            # # 2) vice versa, generate loss if min pos score is larger than lower range parameter
+            # # in summary, range paramters should be inside maximum and minimum scores
+            # range_loss += range_loss2
             loss_time = time.time() - time_loss
             loss_times.append(loss_time)
-            total_loss = (d_loss + cls_loss + rel_loss + range_loss) / self.update_freq
+
+            ## removed rel_loss for one experiment
+            total_loss = (d_loss + cls_loss + range_loss) / self.update_freq
 
             error = calculate_classification_error(bag_label, Y_hat)
             epoch_error += error

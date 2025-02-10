@@ -12,7 +12,7 @@ from tqdm import tqdm
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
-from utils import prepare_statistics_dataframe
+from misc_utils import prepare_statistics_dataframe
 
 
 def calculate_classification_error(Y, Y_hat):

@@ -17,11 +17,7 @@ from omegaconf import OmegaConf, DictConfig
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
 
-from trainer import Trainer
-from depth_trainer import TrainerDepth, DepthLossV2, CompassLoss
-from compass_trainer import TrainerCompass
-from compass_two_stage_trainer import TwoStageCompassLoss, TrainerCompassTwoStage
-from utils import prepare_dataloader, pick_model
+from train_utils import prepare_dataloader, pick_model, pick_trainer, prepare_optimizer
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 # Training settings
@@ -33,7 +29,7 @@ np.seterr(divide='ignore', invalid='ignore')
 os.environ["WANDB__SERVICE_WAIT"] = "300"
 
 
-@hydra.main(config_path="config", config_name="config", version_base='1.1')
+@hydra.main(config_path="config", config_name="swin_config", version_base='1.1')
 def main(cfg: DictConfig):
     print(OmegaConf.to_yaml(cfg))
     print(f"Running {cfg.experiment}, Work in {os.getcwd()}")
@@ -48,7 +44,7 @@ def main(cfg: DictConfig):
     print('Load Train and Test Set')
 
     train_loader, test_loader = prepare_dataloader(cfg)
-    steps_in_epoch = 500
+    steps_in_epoch = 500 // cfg.data.batch_size
     if cfg.data.dataloader == "kidney_real":
         proj_name = "MIL_encoder_24"
     elif cfg.data.dataloader == "synthetic" or "kidney_synth":
@@ -59,14 +55,16 @@ def main(cfg: DictConfig):
             steps_in_epoch = 4666
         else:
             proj_name = "depth"
+    if cfg.experiment == 'swin':
+        proj_name = "swin_compass"
 
     logging.info('Init Model')
     model = pick_model(cfg)
-    if cfg.model.pretrained_depth:
+    if cfg.model.pretrained:
         sd = torch.load(
-            '/users/arivajoo/results/depth/train/resnetdepth/kidney_real/2024-10-31/17-01-11/checkpoints/best_model.pth')
+            '/users/arivajoo/results/swin/train/swincompassV1/kidney_real/2025-01-29/15-23-40/checkpoints/best_model.pth')
         model.load_state_dict(state_dict=sd, strict=False)
-        logging.info('Loaded depth pretrained weights')
+        logging.info('Loaded compass pretrained model')
 
     # if you need to continue training
     resume_run = False
@@ -78,22 +76,7 @@ def main(cfg: DictConfig):
     if torch.cuda.is_available():
         model.cuda()
 
-    if cfg.experiment == 'compass_twostage':
-
-        boundary_name = ['depth_range']
-        boundary_params = [param for name, param in model.named_parameters() if name in boundary_name]
-        base_params = [param for name, param in model.named_parameters() if name not in boundary_name]
-
-        params = [
-            {"params": [*base_params], "lr": cfg.training.learning_rate, 'weight_decay': cfg.training.weight_decay},
-            # First group
-            {"params": boundary_params, "lr": cfg.training.learning_rate * 10, 'weight_decay': 0}
-            # Second group, no decay for boundary parameters
-        ]
-        optimizer = optim.Adam(params, lr=cfg.training.learning_rate, betas=(0.9, 0.999))
-    else:
-        optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
-                               weight_decay=cfg.training.weight_decay)
+    optimizer = prepare_optimizer(cfg, model)
 
     number_of_epochs = cfg.training.epochs
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=int(
@@ -105,36 +88,7 @@ def main(cfg: DictConfig):
         scheduler.load_state_dict(torch.load(os.path.join(cfg.checkpoint, 'current_scheduler.pth')))
     # summary(model,input_size=(300,3,512,512))
 
-    # if "twostage" in cfg.model.name:
-    #     loss_function = torch.nn.CrossEntropyLoss().cuda()
-    #     if "multi" in cfg.model.name:
-    #         trainer = TrainerTwoStageMulti(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function,
-    #                                        cfg=cfg,
-    #                                        steps_in_epoch=steps_in_epoch)
-    #     elif "two_heads" in cfg.model.name:
-    #         loss_function = torch.nn.BCEWithLogitsLoss().cuda()
-    #         trainer = TrainerTwoStageTwoHeads(optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
-    #                                           steps_in_epoch=steps_in_epoch)
-    #     else:
-    #         trainer = TrainerTwoStage(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
-    #                                   steps_in_epoch=steps_in_epoch)
-    if cfg.experiment == "depth":
-        loss_function = DepthLossV2(step=0.01).cuda()
-        trainer = TrainerDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
-                               steps_in_epoch=steps_in_epoch)
-    elif cfg.experiment == "compass":
-        loss_function = CompassLoss(step=0.01).cuda()
-        trainer = TrainerCompass(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
-                                 steps_in_epoch=steps_in_epoch)
-    elif cfg.experiment == "compass_twostage":
-        loss_function = TwoStageCompassLoss(step=0.01, fixed_compass=cfg.model.fixed_compass).cuda()
-        trainer = TrainerCompassTwoStage(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
-                                         steps_in_epoch=steps_in_epoch,
-                                         progressive_sigmoid_scaling=cfg.model.progressive_sigmoid_scaling)
-    else:
-        loss_function = torch.nn.BCEWithLogitsLoss().cuda()
-        trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
-                          steps_in_epoch=steps_in_epoch)
+    trainer = pick_trainer(cfg, optimizer, scheduler, steps_in_epoch)
 
     if not cfg.check:
         experiment = wandb.init(project=proj_name, anonymous='must')
@@ -151,7 +105,7 @@ def main(cfg: DictConfig):
     best_f1 = 0
     best_epoch = 0
     not_improved_epochs = 0
-    best_test_attention = 0
+
     for epoch in range(1, cfg.training.epochs + 1):
         epoch_results = dict()
         train_results = trainer.run_one_epoch(model, train_loader, epoch, train=True)
@@ -162,9 +116,7 @@ def main(cfg: DictConfig):
         train_results = {k + '_train': v for k, v in train_results.items()}
         test_results = {k + '_test': v for k, v in test_results.items()}
 
-        # test_f1 = test_results["f1_score_test"]
         test_loss = test_results["loss_test"]
-        # test_attention = test_results["attention_map_cases_full_kidney_test"]
 
         epoch_results.update(train_results)
         epoch_results.update(test_results)
@@ -174,11 +126,7 @@ def main(cfg: DictConfig):
             return
 
         Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
-        # if test_attention > best_test_attention:
-        #     best_test_attention = test_attention
-        #     logging.info(f"Best new attention at epoch {epoch} (highest mAp on cases on full kidney region)!")
-        #
-        #     torch.save(model.state_dict(), str(dir_checkpoint / 'best_attention.pth'))
+
         if test_loss < best_loss:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), str(dir_checkpoint / 'best_model.pth'))

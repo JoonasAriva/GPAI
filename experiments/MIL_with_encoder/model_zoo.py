@@ -1171,8 +1171,8 @@ class TwoStageCompassV5(ResNetDepth):  # adding inverted sigmoid for non rel sta
         self.tumor_classifier = nn.Linear(512, 1)
         self.tumor_attention_head = AttentionHeadV3(512, 128, 1)
         self.relevancy_classifier = nn.Linear(512, 1)
-        self.depth_range = nn.Parameter(torch.Tensor([-0.5, 0.2]))
-
+        #self.depth_range = nn.Parameter(torch.Tensor([-0.5, 0.2]))
+        self.depth_range = nn.Parameter(torch.Tensor([-0.35, 0.35]))
         self.sigmoid = nn.Sigmoid()
 
         self.scale = 20
@@ -1220,7 +1220,7 @@ class TwoStageCompassV5(ResNetDepth):  # adding inverted sigmoid for non rel sta
             out_of_range_relevancy_scores = self.relevancy_classifier(mean_out_of_range)
             in_range_relevancy_scores = self.relevancy_classifier(mean_in_range)
 
-            return depth_scores, tumor_score, Y_hat, out_of_range_relevancy_scores, in_range_relevancy_scores#,self.tumor_classifier(
+            return depth_scores, tumor_score, Y_hat, out_of_range_relevancy_scores, in_range_relevancy_scores#, self.tumor_classifier(
                 #H), self.relevancy_classifier(H), tumor_attention
 
         else:

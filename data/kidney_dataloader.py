@@ -65,7 +65,8 @@ class KidneyDataloader(torch.utils.data.Dataset):
         if roll_slices:
             center_crop = center_crop
         self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))  # 500
-        self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop - 2), method="end", constant_values=0)
+        # self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop - 2), method="end", constant_values=0)
+        self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop), method="end", constant_values=0)
         self.resizer = Resize(spatial_size=512, size_mode="longest")
         print("PLANE: ", plane)
         print("CROP SIZE: ", center_crop)
@@ -134,7 +135,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
         x = nib.load(path)
 
         x = set_orientation_nib(x)
-        z_spacing = x.header.get_zooms()[2]
+        spacings = x.header.get_zooms()  # [2]-for only z, currently changed to take all spacings | h,w,d (order ?)
         x = x.get_fdata()
 
         if self.downsample:
@@ -180,11 +181,14 @@ class KidneyDataloader(torch.utils.data.Dataset):
 
             if self.roll_slices:
                 x = self.augmentations(x)
-
+            elif self.model_type == "3D":
+                x = self.augmentations(np.expand_dims(x, 0))
             else:
                 for i in range(x.shape[2]):
                     x[:, :, i] = self.augmentations(np.expand_dims(x[:, :, i], 0))
 
+        if len(x.shape) == 3:  # might be case in 3d models
+            x = np.expand_dims(x, 0)
         x = normalize_scan(x, single_channel=not self.as_rgb, model_type=self.model_type, remove_bones=False)
 
         if w < 512 or h < 512:
@@ -221,9 +225,13 @@ class KidneyDataloader(torch.utils.data.Dataset):
             # x = remove_empty_tiles(x)
 
         height_before_padding = x.shape[-1]
-        x = self.padder_z(x).as_tensor()
+        if not self.model_type == "3D":
 
-        return x, y, (case_id, nth_slice, z_spacing, height_before_padding,path)
+            x = self.padder_z(x).as_tensor()
+            return x, y, (case_id, nth_slice, spacings, height_before_padding, path)
+        else:
+            #x = self.padder_z(x).as_tensor()
+            return x, y, (case_id, nth_slice, spacings, height_before_padding, path)
 
 
 class AbdomenAtlasLoader(torch.utils.data.Dataset):
@@ -324,6 +332,7 @@ class AbdomenAtlasLoader(torch.utils.data.Dataset):
 
         x = normalize_scan(x, single_channel=not self.as_rgb, model_type=self.model_type, remove_bones=False)
         height_before_padding = x.shape[-1]
+
         x = self.padder_z(x).as_tensor()
 
         bag_label = torch.Tensor([1])  # placeholder

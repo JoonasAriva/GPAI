@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
-from utils import get_percentage_of_scans_from_dataframe
+from misc_utils import get_percentage_of_scans_from_dataframe
 import torch
 from sklearn.metrics import f1_score
 

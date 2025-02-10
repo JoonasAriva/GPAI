@@ -11,7 +11,7 @@ from tqdm import tqdm
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
-from utils import prepare_statistics_dataframe, get_percentage_of_scans_from_dataframe
+from misc_utils import get_percentage_of_scans_from_dataframe
 
 
 def calculate_classification_error(Y, Y_hat):
@@ -100,7 +100,7 @@ class Trainer:
             step += 1
             gc.collect()
 
-            data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
+            #data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
 
             data = data.to(self.device, dtype=torch.float16, non_blocking=True)
             bag_label = bag_label.to(self.device, non_blocking=True)
@@ -108,57 +108,22 @@ class Trainer:
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
-                # if self.important_slices_only:
-                #     df = prepare_statistics_dataframe(self.train_statistics if train else self.test_statistics,
-                #                                       case_id[0],
-                #                                       self.crop_size, self.nth_slice, self.roll_slices)
-                #     df.loc[(df["kidney"] > 0) | (df["tumor"] > 0) | (df["cyst"] > 0), "important_all"] = 1
-                #     df["important_all"] = df["important_all"].fillna(0)
-                #     df.reset_index(inplace=True)
-                #     # categorize slice vectors by the dataframe
-                #     data = data[df["important_all"] == 1]
-                #     # print("after filtering: ",data.shape)
-                Y_prob, Y_hat, attention = model.forward(data)
+                out = model.forward(data)
+
+                Y_hat = out["predictions"]
+                Y_prob = out["scores"]
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
                 loss = self.loss_function(Y_prob, bag_label.float())
 
-                if self.slice_level_supervision > 0 and meta[0][0] in self.scan_names:  # if True, we provide supervision
-
-                    scan_df = prepare_statistics_dataframe(self.statistics, meta[0][0], crop_size=self.crop_size,
-                                                           nth_slice=meta[1][0].item(),
-                                                           roll_slices=self.roll_slices)
-                    #print("cropped len:", len(scan_df))
-                    scan_df["roi"] = scan_df["tumor"] + scan_df["kidney"]
-                    scan_df.loc[scan_df["roi"] > 1000, "attention"] = 1
-                    scan_df["attention"] = scan_df["attention"].fillna(0)
-                    attention_labels = torch.from_numpy(scan_df["attention"].values).to(self.device, non_blocking=True)
-
-                    attention_loss = self.loss_function(attention, torch.unsqueeze(attention_labels,dim=0))
-                    #print("attention loss: ", attention_loss)
-                    total_loss = loss + attention_loss
-                else:
-                    total_loss = loss
+                total_loss = loss
 
                 total_loss /= self.update_freq
 
                 outputs.append(Y_hat.cpu())
                 targets.append(bag_label.cpu())
-
-                # calculate attention accuracy
-                # ap_all, ap_tumor = evaluate_attention(attention.cpu()[0],
-                # self.statistics,
-                # case_id[0],
-                # self.crop_size, self.nth_slice, bag_label=bag_label, roll_slices=self.roll_slices)
-                # attention_scores["all_scans"][0].append(ap_all)
-                #
-                # if bag_label:
-                #     attention_scores["cases"][0].append(ap_all)
-                #     attention_scores["cases"][1].append(ap_tumor)
-                # else:
-                #     attention_scores["controls"][0].append(ap_all)
 
             if train:
                 time_backprop = time.time()
@@ -172,6 +137,10 @@ class Trainer:
                     if self.scheduler:
                         self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)
+
+            torch.cuda.empty_cache()
+            torch.cuda.reset_max_memory_allocated()
+            #torch.cuda.reset_peak_memory_stats()
 
             epoch_loss += total_loss.item() * self.update_freq
             class_loss += loss.item()
@@ -201,11 +170,6 @@ class Trainer:
 
         f1 = f1_score(targets, outputs, average='macro')
 
-        # results["attention_map_all_scans_full_kidney"] = np.mean(attention_scores["all_scans"][0])
-        # results["attention_map_cases_full_kidney"] = np.mean(attention_scores["cases"][0])
-        # results["attention_map_cases_tumor"] = np.mean(attention_scores["cases"][1])
-        # results["attention_map_controls_full_kidney"] = np.mean(attention_scores["controls"][0])
-
         print("data speed: ", round(np.mean(data_times), 3), "forward speed ", round(np.mean(forward_times), 3),
               "backprop speed: ", round(np.mean(backprop_times), 3))
 
@@ -217,8 +181,8 @@ class Trainer:
 
         # print(f"Attention mAP for kidney region all scans: {round(np.mean(attention_scores['all_scans'][0]), 3)}")
 
-        results["classification_loss"] = class_loss
         results["epoch"] = epoch
+        results["class_loss"] = class_loss
         results["loss"] = epoch_loss
         results["error"] = epoch_error
         results["f1_score"] = f1

@@ -2,7 +2,7 @@ hydra:
   run:
     dir: results/${experiment}/${hydra.job.name}/${model.name}/${data.dataloader}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-experiment: compass_twostage
+experiment: swin_cls
 
 training:
   epochs: 70
@@ -14,28 +14,20 @@ training:
 
 model:
   classes: 1
-  name: 'twostagecompassV5'
-  model_type: '2D'
-  fixed_compass: False
-  pretrained_imagenet: True
+  name: 'swinV1'
+  model_type: '3D'
   pretrained: False
-  neighbour_range: 0
-  num_heads: 1
-  inst_norm: True
-  nr_of_blocks: 2
-  relevancy_head: True
-  progressive_sigmoid_scaling: True
+
 
 data:
+  take_every_nth_slice: 1
   batch_size: 1
-  take_every_nth_slice: 3
   data_augmentations: True
   plane: axial
   dataloader: kidney_real
-  crop_size: 302
-  as_rgb: True
-
-  roll_slices: True
+  crop_size: 400
+  roll_slices: False
+  as_rgb: False
   important_slices_only: False
   no_lungs: False
   patchify: False

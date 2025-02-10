@@ -1,21 +1,24 @@
 from __future__ import print_function
 
-import random
-import re
-
 import numpy as np
 import torch
+import torch.optim as optim
 import torch.utils.data as data_utils
 import torchio as tio
 from omegaconf import DictConfig
-from sklearn.metrics import average_precision_score
 
+from compass_trainer import TrainerCompass
+from compass_two_stage_trainer import TwoStageCompassLoss, TrainerCompassTwoStage
 from data.kidney_dataloader import KidneyDataloader, AbdomenAtlasLoader
 from data.synth_dataloaders import SynthDataloader
+from depth_trainer import TrainerDepth, DepthLossV2, CompassLoss
+from depth_trainer3D import Trainer3DDepth, DepthLoss3D
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
     ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention, \
     MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2, ResNetDepth, TransDepth, CompassModel, \
     CompassModelV2, TwoStageCompass, TwoStageCompassV2, TwoStageCompassV3, TwoStageCompassV4, TwoStageCompassV5
+from swin_models import SWINCompass, SWINClassifier
+from trainer import Trainer
 
 
 def prepare_dataloader(cfg: DictConfig):
@@ -24,9 +27,9 @@ def prepare_dataloader(cfg: DictConfig):
             [tio.RandomFlip(axes=(0, 1)),
              tio.RandomAffine(scales=(1, 1.2), degrees=(0, 0, 10), translation=(50, 50, 0))])
         dataloader_params = {
-            'only_every_nth_slice': cfg.data.take_every_nth_slice, 'as_rgb': True,
+            'only_every_nth_slice': cfg.data.take_every_nth_slice, 'as_rgb': cfg.data.as_rgb,
             'plane': 'axial', 'center_crop': cfg.data.crop_size, 'downsample': False,
-            'roll_slices': cfg.data.roll_slices,
+            'roll_slices': cfg.data.roll_slices, 'model_type': cfg.model.model_type,
             'generate_spheres': True if cfg.data.dataloader == 'kidney_synth' else False, 'patchify': cfg.data.patchify,
             'no_lungs': cfg.data.no_lungs}
         train_dataset = KidneyDataloader(type="train",
@@ -45,8 +48,10 @@ def prepare_dataloader(cfg: DictConfig):
         sampler = torch.utils.data.sampler.WeightedRandomSampler(samples_weight, len(samples_weight),
                                                                  replacement=False)
 
-        train_loader = data_utils.DataLoader(train_dataset, batch_size=1, sampler=sampler, **loader_kwargs)
-        test_loader = data_utils.DataLoader(test_dataset, batch_size=1, shuffle=False, **loader_kwargs)
+        train_loader = data_utils.DataLoader(train_dataset, batch_size=cfg.data.batch_size, sampler=sampler,
+                                             **loader_kwargs)
+        test_loader = data_utils.DataLoader(test_dataset, batch_size=cfg.data.batch_size, shuffle=False,
+                                            **loader_kwargs)
 
     elif cfg.data.dataloader == "synthetic":
         train_dataset = SynthDataloader(length=250, premade=True,
@@ -134,94 +139,54 @@ def pick_model(cfg: DictConfig):
         model = TwoStageCompassV4(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
     elif cfg.model.name == 'twostagecompassV5':
         model = TwoStageCompassV5(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
+    elif cfg.model.name == 'swincompassV1':
+        model = SWINCompass()
+    elif cfg.model.name == 'swinV1':
+        model = SWINClassifier()
     return model
 
 
-# def attention_accuracy(attention, df):
-#     df.loc[(df["kidney"] > 0) | (df["tumor"] > 0) | (df["cyst"] > 0), "important_all"] = 1
-#     df["important_all"] = df["important_all"].fillna(0)
-#
-#     df.loc[df["tumor"] > 0, "important_tumor"] = 1
-#     df["important_tumor"] = df["important_tumor"].fillna(0)
-#
-#     # print("attention min, max and nan values: ",np.min(attention),np.max(attention),np.isnan(attention).any())
-#     treshold = threshold_otsu(attention)
-#     # otsu threshold
-#     # binarize attention
-#     attention[attention > treshold] = 1
-#     attention[attention != 1] = 0
-#
-#     matching_all = np.sum((attention == True) & (np.array(df["important_all"] == True)))
-#     matching_tumor = np.sum((attention == True) & (np.array(df["important_tumor"] == True)))
-#     all_relevant_attention = np.sum(attention)
-#     all_relevant_slices = np.sum(df["important_all"])
-#
-#     accuracy_all = matching_all / all_relevant_attention
-#     recall_all = matching_all / all_relevant_slices
-#     accuracy_tumor = matching_tumor / all_relevant_attention
-#
-#     return round(accuracy_all, 2), round(accuracy_tumor, 2), round(recall_all, 2)
-
-
-def find_case_id(path, start_string, end_string):
-    match = re.search(start_string + '(.*)' + end_string, path[0]).group(1)
-    match = match.strip("_0000")
-    return match
-
-
-def center_crop_dataframe(df, crop_size):
-    if len(df) > crop_size:
-        # simulate center cropper
-        midpoint = int(len(df) / 2)
-        df = df[int(midpoint - crop_size / 2):int(midpoint + crop_size / 2)].copy()
-
-        df.reset_index(inplace=True)
-    return df
-
-
-def prepare_statistics_dataframe(df, case_id, crop_size, nth_slice, roll_slices):
-    scan_df = df.loc[df["file_name"] == case_id]
-
-    scan_df = scan_df.copy()[::nth_slice]
-    # print("len after nth slice sampling: ", len(scan_df))
-    cropped_scan_df = center_crop_dataframe(scan_df, crop_size)
-    if roll_slices:
-        cropped_scan_df = cropped_scan_df[1:-1].copy()
-    return cropped_scan_df
-
-
-def evaluate_attention(attention, df, case_id, crop_size, nth_slice, bag_label, roll_slices):
-    cropped_scan_df = prepare_statistics_dataframe(df, case_id, crop_size, nth_slice, roll_slices)
-    ap_all, ap_tumor = calculate_ap(attention, cropped_scan_df, bag_label)
-
-    return ap_all, ap_tumor
-
-
-def calculate_ap(attention, df, bag_label):
-    df.loc[(df["kidney"] > 0) | (df["tumor"] > 0) | (df["cyst"] > 0), "important_all"] = 1
-    df["important_all"] = df["important_all"].fillna(0)
-
-    df.loc[df["tumor"] > 0, "important_tumor"] = 1
-    df["important_tumor"] = df["important_tumor"].fillna(0)
-
-    attention = attention.detach().cpu().numpy()
-
-    ap_all = average_precision_score(df["important_all"], attention)
-
-    if bag_label:
-        ap_tumor = average_precision_score(df["important_tumor"], attention)
+def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch):
+    if cfg.experiment == "depth":
+        loss_function = DepthLossV2(step=0.01).cuda()
+        trainer = TrainerDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                               steps_in_epoch=steps_in_epoch)
+    elif cfg.experiment == "compass":
+        loss_function = CompassLoss(step=0.01).cuda()
+        trainer = TrainerCompass(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                                 steps_in_epoch=steps_in_epoch)
+    elif cfg.experiment == "compass_twostage":
+        loss_function = TwoStageCompassLoss(step=0.01, fixed_compass=cfg.model.fixed_compass).cuda()
+        trainer = TrainerCompassTwoStage(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                                         steps_in_epoch=steps_in_epoch,
+                                         progressive_sigmoid_scaling=cfg.model.progressive_sigmoid_scaling)
+    elif cfg.experiment == "swin":
+        loss_function = DepthLoss3D(step=0.5).cuda()
+        trainer = Trainer3DDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                                 steps_in_epoch=steps_in_epoch)
     else:
-        ap_tumor = 0
-    return round(ap_all, 2), round(ap_tumor, 2)
+        loss_function = torch.nn.BCEWithLogitsLoss().cuda()
+        trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                          steps_in_epoch=steps_in_epoch)
+    return trainer
 
 
-def get_percentage_of_scans_from_dataframe(df, percentage):
-    grouped_stats = df.groupby("file_name").sum()
-    no_tumor = grouped_stats[grouped_stats["tumor"] == 0].reset_index().file_name.unique()
-    tumor = grouped_stats[grouped_stats["tumor"] > 0].reset_index().file_name.unique()
-    random.shuffle(tumor)
-    random.shuffle(no_tumor)
-    tumor = tumor[:int(percentage * len(tumor))]
-    no_tumor = no_tumor[:int(percentage * len(no_tumor))]
+def prepare_optimizer(cfg, model):
+    if cfg.experiment == 'compass_twostage':
 
-    return np.concatenate([tumor, no_tumor])
+        boundary_name = ['depth_range']
+        boundary_params = [param for name, param in model.named_parameters() if name in boundary_name]
+        base_params = [param for name, param in model.named_parameters() if name not in boundary_name]
+
+        params = [
+            {"params": [*base_params], "lr": cfg.training.learning_rate, 'weight_decay': cfg.training.weight_decay},
+            # First group
+            {"params": boundary_params, "lr": cfg.training.learning_rate * 10, 'weight_decay': 0}
+            # Second group, no decay for boundary parameters
+        ]
+        optimizer = optim.Adam(params, lr=cfg.training.learning_rate, betas=(0.9, 0.999))
+    else:
+        optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
+                               weight_decay=cfg.training.weight_decay)
+
+    return optimizer

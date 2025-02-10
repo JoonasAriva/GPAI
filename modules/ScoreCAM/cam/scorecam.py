@@ -111,22 +111,24 @@ class ScoreCAM_for_attention(BaseCAM):
         rel_labels = rel_labels.cpu().flatten()  # .argsort()
 
         imp = torch.where(rel_labels == 1)[0]
-        non_imp = torch.where(rel_labels == 0)[0]
-
-        imp = imp[torch.randperm(imp.size()[0])]
-        non_imp = non_imp[torch.randperm(non_imp.size()[0])]
-
-        imp = imp[:3]
-        non_imp = non_imp[:3]
-        important_slice_indices = torch.cat((imp, non_imp), 0)
-        print(important_slice_indices, important_slice_indices.shape)
+        print("imp shape: ", imp.shape)
+        # non_imp = torch.where(rel_labels == 0)[0]
+        #
+        # imp = imp[torch.randperm(imp.size()[0])]
+        # non_imp = non_imp[torch.randperm(non_imp.size()[0])]
+        #
+        # imp = imp[:3]
+        # non_imp = non_imp[:3]
+        important_slice_indices = imp
+        # important_slice_indices = torch.cat((imp, non_imp), 0)
+        # print(important_slice_indices, important_slice_indices.shape)
         # important_slice_indices = top_att[-6:]  # we visualize 6 biggest
 
         activations = self.activations['value']
         b, k, u, v = activations.size()
-        activations = activations[important_slice_indices]
-
-        score_saliency_map = torch.zeros((6, h, w))
+        activations = activations[imp]  # important_slice_indices]
+        print("len:", len(important_slice_indices))
+        score_saliency_map = torch.zeros((len(important_slice_indices), h, w))
 
         if torch.cuda.is_available():
             activations = activations.cuda()
@@ -142,7 +144,7 @@ class ScoreCAM_for_attention(BaseCAM):
                     print(i, "min = max, skipping")
                     min_per_channel = saliency_map.min(dim=2).values.min(dim=2).values.view(-1, 1, 1, 1)
                     max_per_channel = saliency_map.max(dim=2).values.max(dim=2).values.view(-1, 1, 1, 1)
-                    print("min and max per channel", min_per_channel, max_per_channel)
+                    #print("min and max per channel", min_per_channel, max_per_channel)
                     continue
                 saliency_map = F.interpolate(saliency_map, size=(h, w), mode='bilinear', align_corners=False)
 
@@ -164,7 +166,7 @@ class ScoreCAM_for_attention(BaseCAM):
                 filtered_input = input[important_slice_indices] * norm_saliency_map
 
                 position_scores, new_tumor_score, new_rel_score = self.model_arch(filtered_input,
-                                                                                  depth_scores=depth_scores, scan_end=6,
+                                                                                  depth_scores=depth_scores, scan_end=len(important_slice_indices),
                                                                                   cam=True)
 
                 if tumor:
@@ -201,7 +203,7 @@ class ScoreCAM_for_attention(BaseCAM):
         min_per_channel = score_saliency_map.min(dim=1).values.min(dim=1).values.view(-1, 1, 1)
 
         max_per_channel = score_saliency_map.max(dim=1).values.max(dim=1).values.view(-1, 1, 1)
-        print("mins and maxs per channel (6):", min_per_channel, max_per_channel)
+        #print("mins and maxs per channel (6):", min_per_channel, max_per_channel)
         # good_activations = good_activations.view(-1)
 
         if torch.isnan(score_saliency_map).any():

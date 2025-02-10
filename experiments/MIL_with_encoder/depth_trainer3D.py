@@ -14,72 +14,64 @@ from misc_utils import get_percentage_of_scans_from_dataframe
 import torch.nn as nn
 
 
-class DepthLoss(nn.Module):
-    def __init__(self, alpha=0.05):
-        super(DepthLoss, self).__init__()
-        self.alpha = alpha
-
-    def forward(self, depth_scores):
-        depth_matrix = depth_scores.reshape(-1, 1) - depth_scores
-        depth_order_loss = (torch.triu(depth_matrix) / (len(depth_scores) ** 2)).sum()  # division is for normalization
-        regularization = depth_scores.abs().sum() / len(depth_scores)
-        loss = depth_order_loss + self.alpha * regularization
-        return loss
-
-
-class DepthLossV2(nn.Module):
+class DepthLoss3D(nn.Module):
     def __init__(self, step):
         super().__init__()
         self.step = step
 
-    def create_step_matrix(self, step_value, distance_matrix):
-        matrix_size = distance_matrix.shape[0]
-        steps = torch.zeros(matrix_size, matrix_size)
-        steps = torch.diagonal_scatter(steps, torch.zeros(matrix_size), 0)
-        for i in range(matrix_size):
-            steps = torch.diagonal_scatter(steps, (1 + i) * step_value * torch.ones(matrix_size - i - 1), 1 + i)
-            steps = torch.diagonal_scatter(steps, (1 + i) * step_value * torch.ones(matrix_size - i - 1), -1 - i)
-        return steps
+    def calc_manhattan_distances_in_3d(self, matrix):
+        return matrix.reshape(-1, 1, 3) - matrix.float()
 
-    def forward(self, predictions, z_spacing, nth_slice):
-        # nth slice - slice sample frequency
-        # if we only take every 3rd slice for example
-        acceptable_step = self.step * z_spacing * nth_slice
-        predictions = predictions[:, 0]
-        distance_matrix = predictions.reshape(-1, 1) - predictions
-        steps = self.create_step_matrix(acceptable_step, distance_matrix).type(torch.HalfTensor).cuda()
+    def create_index_tensor(self, d, h, w):
+        return torch.stack(list(torch.unravel_index(torch.arange(0, d * h * w), (d, h, w))), dim=1)
+
+    def forward(self, predictions, spacings, shape):
+        # TODO: add spacings into step matrix
+        d, h, w = shape
+        # meta information about scan spacing/slice thickness is not in right shape and order for this algorithm
+        new_spacing = torch.unsqueeze(torch.permute(torch.stack(spacings), (1, 0)), 0)
+        # go from h,w,d order to d,h,w order
+        indexes = [2, 0, 1]
+        new_spacing = new_spacing[:, :, indexes]
+        index_tensor = self.create_index_tensor(d, h, w)
+        # multiply indexing tensor with reordered 3d spacings
+        # self.step is just for scaling
+        index_tensor = index_tensor * new_spacing * self.step
+        # calculate the manhattan distances for predictions and index matrix
+        distance_matrix = self.calc_manhattan_distances_in_3d(predictions)
+        steps = self.calc_manhattan_distances_in_3d(index_tensor).cuda()
+
         # acceptable steps calculated only on slice pairings where the order is correctly predicted
+        # We define the "correct" order to be positive
         idxs = distance_matrix >= 0
         distance_matrix[idxs] = distance_matrix[idxs] - 0.2 * steps[idxs]
-
         idxs = distance_matrix >= 0  # this is updated now
         # remove the remaining part of allowed step
         distance_matrix[idxs] = torch.maximum(distance_matrix[idxs] - 0.8 * steps[idxs],
                                               torch.zeros_like(distance_matrix[idxs]))
+
+        # Each distance is calcualted twice: dist(x,y) and dist(y,x), where dist(x,y) = - dist(y,x)
+        # We only want to take one distance per pair (generate loss once per pair)
+        to_consider_idxs = steps >= 0
+        distance_matrix[~to_consider_idxs] = 0
+
+        # As some patches share a height level, previous lines will not catch cases where the index distance is 0
+        # example: patches share z-coordinate
+        # therefore we halve the loss from these patch pairs, since they are taken twice into loss calculation
+        same_level_idxs = steps == 0
+        distance_matrix[same_level_idxs] = 0.5 * distance_matrix[same_level_idxs]
+
         # so: loss is coming from:
         # a) pairings which are correctly ordered but the distance is too big
         # b) pairings where order is incorrect (notice abs()), negative ordering gives negative values in distance matrix
         # c) pairings which are correctly ordered but the distance is too small e.g: (legs : 0.1, neck: 0.15)
-        # TODO: masking for similar values
-        loss = torch.tril(distance_matrix).abs().sum() / (len(predictions) ** 2)  # division is for normalization
-        return loss
+
+        losses = [distance_matrix[:, :, i].abs().sum(dim=(0, 1)) / (len(distance_matrix) ** 2) for i in range(3)]
+
+        return losses  # order: z_loss, y_loss, x_loss
 
 
-class CompassLoss(nn.Module):
-    def __init__(self, step):
-        super().__init__()
-
-        self.cls_loss = torch.nn.BCEWithLogitsLoss()
-        self.depth_loss = DepthLossV2(step=step)
-
-    def forward(self, depth_predictions, z_spacing, nth_slice, tumor_prob, bag_label):
-        d_loss = self.depth_loss(depth_predictions, z_spacing, nth_slice)
-        cls_loss = self.cls_loss(tumor_prob, bag_label)
-
-        return d_loss, cls_loss
-
-
-class TrainerDepth:
+class Trainer3DDepth:
     def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None):
 
         self.check = cfg.check
@@ -120,7 +112,9 @@ class TrainerDepth:
         results = dict()
         epoch_loss = 0.
         depth_loss = 0.
-        class_loss = 0.
+        d_loss = 0.
+        h_loss = 0.
+        w_loss = 0.
         step = 0
         nr_of_batches = len(data_loader)
 
@@ -159,7 +153,7 @@ class TrainerDepth:
             step += 1
             gc.collect()
 
-            data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
+            # data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
 
             data = data.to(self.device, dtype=torch.float16, non_blocking=True)
             bag_label = bag_label.to(self.device, non_blocking=True)
@@ -167,23 +161,22 @@ class TrainerDepth:
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
-                position_scores, tumor_score, Y_hat = model.forward(data)
+                position_scores, shape = model.forward(data)
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
                 time_loss = time.time()
-                d_loss, cls_loss = self.loss_function(position_scores, z_spacing=meta[2].item(),
-                                                      nth_slice=meta[1].item(),
-                                                      tumor_prob=tumor_score, bag_label=bag_label.float())
+
+                dloss, hloss, wloss = self.loss_function(position_scores, spacings=meta[2], shape=shape)
 
                 loss_time = time.time() - time_loss
                 loss_times.append(loss_time)
-                total_loss = (d_loss + cls_loss) / self.update_freq
+                depth_loss = (dloss + hloss + wloss) / self.update_freq
 
             if train:
                 time_backprop = time.time()
-                scaler.scale(total_loss).backward()
+                scaler.scale(depth_loss).backward()
                 backprop_time = time.time() - time_backprop
                 backprop_times.append(backprop_time)
                 if (step) % self.update_freq == 0 or (step) == len(data_loader):
@@ -194,9 +187,11 @@ class TrainerDepth:
                         self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)
 
-            epoch_loss += total_loss.item() * self.update_freq
-            depth_loss += d_loss.item() * self.update_freq
-            class_loss += cls_loss.item() * self.update_freq
+            epoch_loss += depth_loss.item() * self.update_freq
+            # depth_loss += d_loss * self.update_freq
+            d_loss += dloss * self.update_freq
+            w_loss += wloss * self.update_freq
+            h_loss += hloss * self.update_freq
 
             if step >= 6 and self.check:
                 break
@@ -211,8 +206,10 @@ class TrainerDepth:
         # calculate loss and error for epoch
 
         epoch_loss /= nr_of_batches
-        depth_loss /= nr_of_batches
-        class_loss /= nr_of_batches
+        #depth_loss /= nr_of_batches
+        d_loss /= nr_of_batches
+        h_loss /= nr_of_batches
+        w_loss /= nr_of_batches
 
         print("data speed: ", round(np.mean(data_times), 3), "forward speed ", round(np.mean(forward_times), 3),
               "backprop speed: ", round(np.mean(backprop_times), 3), "loss speed: ", round(np.mean(loss_times), 3), )
@@ -223,7 +220,9 @@ class TrainerDepth:
 
         results["epoch"] = epoch
         results["loss"] = epoch_loss
-        results["depth_loss"] = depth_loss
-        results["class_loss"] = class_loss
+        #results["depth_loss"] = depth_loss
+        results["d_loss"] = d_loss
+        results["h_loss"] = h_loss
+        results["w_loss"] = w_loss
 
         return results
