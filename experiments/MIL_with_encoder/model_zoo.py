@@ -82,12 +82,12 @@ class ResNetAttentionV3(nn.Module):
         for attention_head in self.attention_heads:
             attention_head.eval()
 
-    def forward(self, x, return_unnorm_attention=True, scorecam_wrt_classifier_score=False, full_pass=False):
-
+    def forward(self, x, scan_end, scorecam=False):
+        out = dict()
         H = self.backbone(x)
         H = self.adaptive_pooling(H)
         H = H.view(-1, 512 * 1 * 1)
-
+        H = H[:scan_end]
         if self.neighbour_range != 0:
             combinedH = H.view(-1)
             combinedH = F.pad(combinedH, (self.L * self.neighbour_range, self.L * self.neighbour_range), "constant",
@@ -105,9 +105,10 @@ class ResNetAttentionV3(nn.Module):
         A = F.softmax(unnorm_A, dim=1)
         # A = unnorm_A / (torch.sum(unnorm_A) + 0.01)
 
-        if scorecam_wrt_classifier_score:
+        if scorecam:
             Y_probs = self.classifier(H)
-            return None, None, Y_probs
+            out['scores'] = Y_probs
+            return out
 
         M = torch.mm(A, H)
         # print("M", M.shape)
@@ -115,7 +116,10 @@ class ResNetAttentionV3(nn.Module):
         Y_hat = self.sig(Y_prob)
         Y_hat = torch.ge(Y_hat, 0.5).float()
 
-        return Y_prob, Y_hat, unnorm_A
+        out['predictions'] = Y_hat
+        out['scores'] = Y_prob
+        out['weights'] = A
+        return out  # Y_prob, Y_hat, unnorm_A
 
 
 class SelfAttention(nn.Module):
@@ -804,6 +808,8 @@ class ResNetDepth(nn.Module):
         self.backbone = nn.Sequential(*modules)
 
     def forward(self, x, scan_end):
+        print(f"Forward pass on {x.device}")
+        print("x shape: ", x.shape)
         H = self.backbone(x)
         H = self.adaptive_pooling(H)
         H = H[:scan_end]
@@ -811,7 +817,7 @@ class ResNetDepth(nn.Module):
 
         depth_scores = self.classifier(H)
 
-        return depth_scores, H
+        return depth_scores
 
 
 class TransDepth(nn.Module):
@@ -1171,7 +1177,7 @@ class TwoStageCompassV5(ResNetDepth):  # adding inverted sigmoid for non rel sta
         self.tumor_classifier = nn.Linear(512, 1)
         self.tumor_attention_head = AttentionHeadV3(512, 128, 1)
         self.relevancy_classifier = nn.Linear(512, 1)
-        #self.depth_range = nn.Parameter(torch.Tensor([-0.5, 0.2]))
+        # self.depth_range = nn.Parameter(torch.Tensor([-0.5, 0.2]))
         self.depth_range = nn.Parameter(torch.Tensor([-0.35, 0.35]))
         self.sigmoid = nn.Sigmoid()
 
@@ -1220,8 +1226,8 @@ class TwoStageCompassV5(ResNetDepth):  # adding inverted sigmoid for non rel sta
             out_of_range_relevancy_scores = self.relevancy_classifier(mean_out_of_range)
             in_range_relevancy_scores = self.relevancy_classifier(mean_in_range)
 
-            return depth_scores, tumor_score, Y_hat, out_of_range_relevancy_scores, in_range_relevancy_scores#, self.tumor_classifier(
-                #H), self.relevancy_classifier(H), tumor_attention
+            return depth_scores, tumor_score, Y_hat, out_of_range_relevancy_scores, in_range_relevancy_scores  # , self.tumor_classifier(
+            # H), self.relevancy_classifier(H), tumor_attention
 
         else:
             return depth_scores, self.tumor_classifier(H), self.relevancy_classifier(H)

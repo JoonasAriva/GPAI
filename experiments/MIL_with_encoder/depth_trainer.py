@@ -1,4 +1,5 @@
 import gc
+import os
 import sys
 import time
 from contextlib import nullcontext
@@ -80,10 +81,14 @@ class CompassLoss(nn.Module):
 
 
 class TrainerDepth:
-    def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None):
+    def __init__(self, optimizer, loss_function,cfg, steps_in_epoch: int = 0, scheduler=None):
 
         self.check = cfg.check
-        self.device = torch.device("cuda")
+        #self.device = torch.device("cuda")
+        #
+        #self.device = torch.device(int(os.environ['LOCAL_RANK']))
+        #print("trainer device:", self.device)
+        #self.device = device
         self.optimizer = optimizer
         self.loss_function = loss_function
         self.crop_size = cfg.data.crop_size
@@ -147,6 +152,8 @@ class TrainerDepth:
         attention_scores["cases"] = [[], []]
         attention_scores["controls"] = [[], []]
         time_data = time.time()
+
+
         for data, bag_label, meta in tepoch:
 
             if self.check:
@@ -159,27 +166,28 @@ class TrainerDepth:
             step += 1
             gc.collect()
 
-            data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
+            # data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
+            data = torch.permute(data, (0, 4, 1, 2, 3))
 
-            data = data.to(self.device, dtype=torch.float16, non_blocking=True)
-            bag_label = bag_label.to(self.device, non_blocking=True)
-
+            #data = data.to(self.device, dtype=torch.float16, non_blocking=True)
+            data = data.cuda(non_blocking=True).to(dtype=torch.float16)
+            print("data device: ", data.device, "data shape: ", data.shape)
+            print("device: ", int(os.environ["LOCAL_RANK"]))
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
-                position_scores, tumor_score, Y_hat = model.forward(data)
+                position_scores = model.forward(data, scan_end=meta[3])
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
                 time_loss = time.time()
-                d_loss, cls_loss = self.loss_function(position_scores, z_spacing=meta[2].item(),
-                                                      nth_slice=meta[1].item(),
-                                                      tumor_prob=tumor_score, bag_label=bag_label.float())
+                d_loss = self.loss_function(position_scores, z_spacing=meta[2][2],  # second 2 is for z spacing
+                                            nth_slice=meta[1])
 
                 loss_time = time.time() - time_loss
                 loss_times.append(loss_time)
-                total_loss = (d_loss + cls_loss) / self.update_freq
+                total_loss = (d_loss) / self.update_freq
 
             if train:
                 time_backprop = time.time()
@@ -196,7 +204,6 @@ class TrainerDepth:
 
             epoch_loss += total_loss.item() * self.update_freq
             depth_loss += d_loss.item() * self.update_freq
-            class_loss += cls_loss.item() * self.update_freq
 
             if step >= 6 and self.check:
                 break
@@ -224,6 +231,5 @@ class TrainerDepth:
         results["epoch"] = epoch
         results["loss"] = epoch_loss
         results["depth_loss"] = depth_loss
-        results["class_loss"] = class_loss
 
         return results

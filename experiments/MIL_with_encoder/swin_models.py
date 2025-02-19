@@ -1,7 +1,8 @@
 import einops
 import torch
 import torch.nn as nn
-from monai.networks.nets.swin_unetr import SwinTransformer
+#from monai.networks.nets.swin_unetr import SwinTransformer
+from modded_swin_model import SwinTransformer
 from monai.utils import ensure_tuple_rep
 from torch import Tensor as T
 
@@ -32,11 +33,12 @@ class SWINCompass(nn.Module):
 
     def forward(self, x):
         x = self.backbone(x)[-1]
-        b, c, d, h, w = x.shape
-        x = einops.rearrange(x, 'b c d h w -> b (d h w) c')
-        print("in model: ", x.shape)
+        b, c, h, w, d = x.shape
+        #print("before einops in model: ", x.shape)
+        x = einops.rearrange(x, 'b c h w d -> b (h w d) c')
+        #print("in model after einops: ", x.shape)
         scores = self.classifier(x)
-        return scores, (d, h, w)
+        return scores, (h, w, d)
 
 
 class SelfAttention(nn.Module):

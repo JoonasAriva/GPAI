@@ -2,7 +2,7 @@ hydra:
   run:
     dir: results/${experiment}/${hydra.job.name}/${model.name}/${data.dataloader}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-experiment: swin_cls
+experiment: swin
 
 training:
   epochs: 70
@@ -10,11 +10,12 @@ training:
   weight_decay: 5e-4
   weight_update_freq: 1
   seed: 1
+  multi_gpu: False
 
 
 model:
   classes: 1
-  name: 'swinV1'
+  name: 'swincompassV1'
   model_type: '3D'
   pretrained: False
 

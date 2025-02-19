@@ -1,5 +1,6 @@
 from __future__ import print_function
 
+import datetime
 import logging
 import os
 import sys
@@ -11,6 +12,8 @@ import torch
 import torch.optim as optim
 import wandb
 from omegaconf import OmegaConf, DictConfig
+from torch.distributed import init_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 # from torchinfo import summary
 
@@ -28,8 +31,29 @@ np.seterr(divide='ignore', invalid='ignore')
 
 os.environ["WANDB__SERVICE_WAIT"] = "300"
 
+def print_slurm_env():
+    slurm_env = "\n".join(
+        [
+            "=" * 80,
+            f"SLURM Process: {os.environ.get('SLURM_PROCID', 'N/A')=}",
+            "=" * 80,
+            f"{os.environ.get('SLURM_NTASKS', 'N/A')=}",
+            f"{os.environ.get('SLURM_LOCALID', 'N/A')=}",
+            f"{os.environ.get('RANK', 'N/A')=}",
+            f"{os.environ.get('LOCAL_RANK', 'N/A')=}",
+            f"{os.environ.get('WORLD_SIZE', 'N/A')=}",
+            f"{os.environ.get('MASTER_ADDR', 'N/A')=}",
+            f"{os.environ.get('MASTER_PORT', 'N/A')=}",
+            f"{os.environ.get('ROCR_VISIBLE_DEVICES', 'N/A')=}",
+            f"{os.environ.get('SLURM_JOB_GPUS', 'N/A')=}",
+            f"{os.sched_getaffinity(0)=}",
+            f"{os.environ.get('TORCH_NCCL_ASYNC_ERROR_HANDLING', 'N/A')=}",
+            "-" * 80 + "\n",
+        ]
+    )
+    print(slurm_env, flush=True)
 
-@hydra.main(config_path="config", config_name="swin_config", version_base='1.1')
+@hydra.main(config_path="config", config_name="config", version_base='1.1')
 def main(cfg: DictConfig):
     print(OmegaConf.to_yaml(cfg))
     print(f"Running {cfg.experiment}, Work in {os.getcwd()}")
@@ -41,10 +65,16 @@ def main(cfg: DictConfig):
         torch.cuda.manual_seed(cfg.training.seed)
         print('\nGPU is ON!')
 
+    if cfg.training.multi_gpu:
+        #torch.multiprocessing.set_start_method("spawn")
+        #local_rank = int(os.environ['LOCAL_RANK'])
+        init_process_group(backend="nccl")
+    print_slurm_env()
     print('Load Train and Test Set')
 
     train_loader, test_loader = prepare_dataloader(cfg)
-    steps_in_epoch = 500 // cfg.data.batch_size
+    steps_with_parnu = 1250
+    steps_in_epoch = steps_with_parnu // cfg.data.batch_size  # before pärnu it was 500
     if cfg.data.dataloader == "kidney_real":
         proj_name = "MIL_encoder_24"
     elif cfg.data.dataloader == "synthetic" or "kidney_synth":
@@ -60,6 +90,7 @@ def main(cfg: DictConfig):
 
     logging.info('Init Model')
     model = pick_model(cfg)
+
     if cfg.model.pretrained:
         sd = torch.load(
             '/users/arivajoo/results/swin/train/swincompassV1/kidney_real/2025-01-29/15-23-40/checkpoints/best_model.pth')
@@ -73,8 +104,21 @@ def main(cfg: DictConfig):
         model.load_state_dict(
             torch.load(os.path.join(cfg.checkpoint, 'current_model.pth')))
         resume_run = True
-    if torch.cuda.is_available():
+    #if torch.cuda.is_available():
+    #   model.cuda()
+
+    if cfg.training.multi_gpu == True:
+
+        n_gpus = torch.cuda.device_count()
+        local_rank = int(os.environ["LOCAL_RANK"])
+        torch.cuda.set_device(local_rank)
         model.cuda()
+        print("Using {} GPUs".format(n_gpus))
+        print("Local rank: {}".format(local_rank))
+        model = DDP(  # <- We need to wrap the model with DDP
+            model,
+            device_ids=[local_rank],  # <- and specify the device_ids/output_device
+        )
 
     optimizer = prepare_optimizer(cfg, model)
 

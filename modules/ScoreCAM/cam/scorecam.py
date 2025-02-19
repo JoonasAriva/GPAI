@@ -91,43 +91,39 @@ class ScoreCAM_for_attention(BaseCAM):
 
     """
 
-    def __init__(self, model_dict, wrt_classifier_score=False):
+    def __init__(self, model_dict):
         super().__init__(model_dict)
-        self.classifier_score = wrt_classifier_score
 
-    def forward(self, input, scan_end, depth_scores, retain_graph=False, tumor=True):
+    def forward(self, input, scan_end, depth_scores=None, retain_graph=False, tumor=True):
 
         b, c, h, w = input.size()
 
         self.model_arch.zero_grad()
-        position_scores, tumor_score, rel_scores = self.model_arch(input, scan_end=scan_end, depth_scores=depth_scores,
-                                                                   cam=True)
+        out = self.model_arch(input, scan_end=scan_end, scorecam=True)  # depth_scores=depth_scores,
 
-        rel_labels = torch.where(
-            (self.model_arch.depth_range[0].item() < position_scores) & (
-                    position_scores < self.model_arch.depth_range[1].item()),
-            1, 0)
+        scores = out["scores"]
 
-        rel_labels = rel_labels.cpu().flatten()  # .argsort()
+        important_slice_indices = scores.cpu().flatten().argsort()[-6:]
 
-        imp = torch.where(rel_labels == 1)[0]
-        print("imp shape: ", imp.shape)
-        # non_imp = torch.where(rel_labels == 0)[0]
+        # position_scores, tumor_score, rel_scores
+
+        # rel_labels = torch.where(
+        #     (self.model_arch.depth_range[0].item() < position_scores) & (
+        #             position_scores < self.model_arch.depth_range[1].item()),
+        #     1, 0)
+
+        # rel_labels = rel_labels.cpu().flatten()  # .argsort()
+
+        # imp = torch.where(rel_labels == 1)[0]
+        # print("imp shape: ", imp.shape)
         #
-        # imp = imp[torch.randperm(imp.size()[0])]
-        # non_imp = non_imp[torch.randperm(non_imp.size()[0])]
-        #
-        # imp = imp[:3]
-        # non_imp = non_imp[:3]
-        important_slice_indices = imp
-        # important_slice_indices = torch.cat((imp, non_imp), 0)
-        # print(important_slice_indices, important_slice_indices.shape)
-        # important_slice_indices = top_att[-6:]  # we visualize 6 biggest
+        # important_slice_indices = imp
 
         activations = self.activations['value']
         b, k, u, v = activations.size()
-        activations = activations[imp]  # important_slice_indices]
-        print("len:", len(important_slice_indices))
+        activations = activations[important_slice_indices]  # important_slice_indices]
+
+        # print("len:", len(important_slice_indices))
         score_saliency_map = torch.zeros((len(important_slice_indices), h, w))
 
         if torch.cuda.is_available():
@@ -141,10 +137,10 @@ class ScoreCAM_for_attention(BaseCAM):
                 # upsampling
                 saliency_map = torch.unsqueeze(activations[:, i, :, :], 1)
                 if saliency_map.max() == saliency_map.min():
-                    print(i, "min = max, skipping")
+                    #print(i, "min = max, skipping")
                     min_per_channel = saliency_map.min(dim=2).values.min(dim=2).values.view(-1, 1, 1, 1)
                     max_per_channel = saliency_map.max(dim=2).values.max(dim=2).values.view(-1, 1, 1, 1)
-                    #print("min and max per channel", min_per_channel, max_per_channel)
+                    # print("min and max per channel", min_per_channel, max_per_channel)
                     continue
                 saliency_map = F.interpolate(saliency_map, size=(h, w), mode='bilinear', align_corners=False)
 
@@ -163,16 +159,21 @@ class ScoreCAM_for_attention(BaseCAM):
                 # predication on masked input
                 if torch.isnan(norm_saliency_map).any():
                     print("norm saliency map contains nans: ")
+
                 filtered_input = input[important_slice_indices] * norm_saliency_map
 
-                position_scores, new_tumor_score, new_rel_score = self.model_arch(filtered_input,
-                                                                                  depth_scores=depth_scores, scan_end=len(important_slice_indices),
-                                                                                  cam=True)
+                out = self.model_arch(filtered_input, scan_end=len(important_slice_indices), scorecam=True)
+                score = out['scores']
 
-                if tumor:
-                    score = new_tumor_score
-                else:
-                    score = new_rel_score
+                # THIS PART IS FOR COMPASS MODELS
+                # position_scores, new_tumor_score, new_rel_score = self.model_arch(filtered_input,
+                #                                                                   depth_scores=depth_scores, scan_end=len(important_slice_indices),
+                #                                                                   cam=True)
+                #
+                # if tumor:
+                #     score = new_tumor_score
+                # else:
+                #     score = new_rel_score
 
                 new_attention = torch.squeeze(score).view(-1, 1, 1)
 
@@ -203,7 +204,7 @@ class ScoreCAM_for_attention(BaseCAM):
         min_per_channel = score_saliency_map.min(dim=1).values.min(dim=1).values.view(-1, 1, 1)
 
         max_per_channel = score_saliency_map.max(dim=1).values.max(dim=1).values.view(-1, 1, 1)
-        #print("mins and maxs per channel (6):", min_per_channel, max_per_channel)
+        # print("mins and maxs per channel (6):", min_per_channel, max_per_channel)
         # good_activations = good_activations.view(-1)
 
         if torch.isnan(score_saliency_map).any():
@@ -216,7 +217,7 @@ class ScoreCAM_for_attention(BaseCAM):
             print("score sal map contains nans3: ")
             print(score_saliency_map)
 
-        return score_saliency_map, important_slice_indices, tumor_score, rel_scores[important_slice_indices]
+        return score_saliency_map, important_slice_indices, scores  # , rel_scores[important_slice_indices]
 
-    def __call__(self, input, scan_end, depth_scores, retain_graph=False, tumor=True):
+    def __call__(self, input, scan_end, depth_scores=None, retain_graph=False, tumor=True):
         return self.forward(input, scan_end, depth_scores, retain_graph, tumor)

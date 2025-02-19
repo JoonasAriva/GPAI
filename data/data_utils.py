@@ -237,10 +237,13 @@ def get_kidney_datasets(type: str, no_lungs: bool = False):
     all_controls = []
     all_tumors = []
     # tuh
-    for data_path in [tuh_train_data_path, tuh_test_data_path]:
+    for data_path in [tuh_train_data_path, tuh_test_data_path, parnu_data_path]:
         control_path = data_path + 'controls/images/' + type + '/*nii.gz'
         tumor_path = data_path + 'cases/images/' + type + '/*nii.gz'
 
+        if "parnu" in control_path:
+            control_path = control_path.replace("/project/", "/scratch/")
+            tumor_path = tumor_path.replace("/project/", "/scratch/")
         control = glob.glob(control_path)
         tumor = glob.glob(tumor_path)
 

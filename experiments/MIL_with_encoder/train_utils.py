@@ -6,6 +6,7 @@ import torch.optim as optim
 import torch.utils.data as data_utils
 import torchio as tio
 from omegaconf import DictConfig
+from torch.utils.data.distributed import DistributedSampler
 
 from compass_trainer import TrainerCompass
 from compass_two_stage_trainer import TwoStageCompassLoss, TrainerCompassTwoStage
@@ -19,7 +20,7 @@ from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerP
     CompassModelV2, TwoStageCompass, TwoStageCompassV2, TwoStageCompassV3, TwoStageCompassV4, TwoStageCompassV5
 from swin_models import SWINCompass, SWINClassifier
 from trainer import Trainer
-
+import os
 
 def prepare_dataloader(cfg: DictConfig):
     if "kidney" in cfg.data.dataloader:
@@ -48,6 +49,11 @@ def prepare_dataloader(cfg: DictConfig):
         sampler = torch.utils.data.sampler.WeightedRandomSampler(samples_weight, len(samples_weight),
                                                                  replacement=False)
 
+        if cfg.training.multi_gpu == True:
+            print("creating distributed sampler")
+            # sampler = DistributedSamplerWrapper(sampler=sampler, num_replicas=torch.cuda.device_count())
+            print("rank in train utils: ", int(os.environ["LOCAL_RANK"]))
+            sampler = DistributedSampler(train_dataset, num_replicas=2, rank=int(os.environ["LOCAL_RANK"]), shuffle=True)
         train_loader = data_utils.DataLoader(train_dataset, batch_size=cfg.data.batch_size, sampler=sampler,
                                              **loader_kwargs)
         test_loader = data_utils.DataLoader(test_dataset, batch_size=cfg.data.batch_size, shuffle=False,
@@ -148,8 +154,9 @@ def pick_model(cfg: DictConfig):
 
 def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch):
     if cfg.experiment == "depth":
-        loss_function = DepthLossV2(step=0.01).cuda()
-        trainer = TrainerDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+        loss_function = DepthLossV2(step=0.1).cuda()  # was 0.01
+        trainer = TrainerDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function,
+                               cfg=cfg,
                                steps_in_epoch=steps_in_epoch)
     elif cfg.experiment == "compass":
         loss_function = CompassLoss(step=0.01).cuda()

@@ -22,18 +22,18 @@ class DepthLoss3D(nn.Module):
     def calc_manhattan_distances_in_3d(self, matrix):
         return matrix.reshape(-1, 1, 3) - matrix.float()
 
-    def create_index_tensor(self, d, h, w):
-        return torch.stack(list(torch.unravel_index(torch.arange(0, d * h * w), (d, h, w))), dim=1)
+    def create_index_tensor(self, h, w, d):
+        return torch.stack(list(torch.unravel_index(torch.arange(0, h * w * d), (h, w, d))), dim=1)
 
     def forward(self, predictions, spacings, shape):
         # TODO: add spacings into step matrix
-        d, h, w = shape
+        h, w, d = shape
         # meta information about scan spacing/slice thickness is not in right shape and order for this algorithm
         new_spacing = torch.unsqueeze(torch.permute(torch.stack(spacings), (1, 0)), 0)
         # go from h,w,d order to d,h,w order
-        indexes = [2, 0, 1]
-        new_spacing = new_spacing[:, :, indexes]
-        index_tensor = self.create_index_tensor(d, h, w)
+        # indexes = [2, 0, 1]
+        # new_spacing = new_spacing[:, :, indexes]
+        index_tensor = self.create_index_tensor(h, w, d)
         # multiply indexing tensor with reordered 3d spacings
         # self.step is just for scaling
         index_tensor = index_tensor * new_spacing * self.step
@@ -68,7 +68,7 @@ class DepthLoss3D(nn.Module):
 
         losses = [distance_matrix[:, :, i].abs().sum(dim=(0, 1)) / (len(distance_matrix) ** 2) for i in range(3)]
 
-        return losses  # order: z_loss, y_loss, x_loss
+        return losses  # order:  y_loss, x_loss, z_loss
 
 
 class Trainer3DDepth:
@@ -156,7 +156,7 @@ class Trainer3DDepth:
             # data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
 
             data = data.to(self.device, dtype=torch.float16, non_blocking=True)
-            bag_label = bag_label.to(self.device, non_blocking=True)
+            #bag_label = bag_label.to(self.device, non_blocking=True)
 
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
@@ -168,7 +168,7 @@ class Trainer3DDepth:
 
                 time_loss = time.time()
 
-                dloss, hloss, wloss = self.loss_function(position_scores, spacings=meta[2], shape=shape)
+                hloss, wloss, dloss = self.loss_function(position_scores, spacings=meta[2], shape=shape)
 
                 loss_time = time.time() - time_loss
                 loss_times.append(loss_time)
@@ -186,6 +186,9 @@ class Trainer3DDepth:
                     if self.scheduler:
                         self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)
+
+            torch.cuda.empty_cache()
+            torch.cuda.reset_max_memory_allocated()
 
             epoch_loss += depth_loss.item() * self.update_freq
             # depth_loss += d_loss * self.update_freq
@@ -206,7 +209,7 @@ class Trainer3DDepth:
         # calculate loss and error for epoch
 
         epoch_loss /= nr_of_batches
-        #depth_loss /= nr_of_batches
+        # depth_loss /= nr_of_batches
         d_loss /= nr_of_batches
         h_loss /= nr_of_batches
         w_loss /= nr_of_batches
@@ -220,7 +223,7 @@ class Trainer3DDepth:
 
         results["epoch"] = epoch
         results["loss"] = epoch_loss
-        #results["depth_loss"] = depth_loss
+        # results["depth_loss"] = depth_loss
         results["d_loss"] = d_loss
         results["h_loss"] = h_loss
         results["w_loss"] = w_loss

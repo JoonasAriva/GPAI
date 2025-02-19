@@ -100,7 +100,7 @@ class Trainer:
             step += 1
             gc.collect()
 
-            #data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
+            data = torch.permute(torch.squeeze(data), (3, 0, 1, 2)) # if training a swin model, disable this line
 
             data = data.to(self.device, dtype=torch.float16, non_blocking=True)
             bag_label = bag_label.to(self.device, non_blocking=True)
@@ -108,7 +108,7 @@ class Trainer:
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
-                out = model.forward(data)
+                out = model.forward(data, scan_end=meta[3])
 
                 Y_hat = out["predictions"]
                 Y_prob = out["scores"]

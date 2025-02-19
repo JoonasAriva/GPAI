@@ -2,19 +2,20 @@ hydra:
   run:
     dir: results/${experiment}/${hydra.job.name}/${model.name}/${data.dataloader}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-experiment: compass_twostage
+experiment: depth
 
 training:
-  epochs: 70
+  epochs: 50
   learning_rate: 1e-4
   weight_decay: 5e-4
   weight_update_freq: 1
   seed: 1
+  multi_gpu: True
 
 
 model:
   classes: 1
-  name: 'twostagecompassV5'
+  name: 'resnetdepth'
   model_type: '2D'
   fixed_compass: False
   pretrained_imagenet: True
@@ -27,7 +28,7 @@ model:
   progressive_sigmoid_scaling: True
 
 data:
-  batch_size: 1
+  batch_size: 2
   take_every_nth_slice: 3
   data_augmentations: True
   plane: axial
@@ -41,4 +42,4 @@ data:
   patchify: False
   slice_level_supervision: 0
   random_experiment: False
-check: False
+check: True
