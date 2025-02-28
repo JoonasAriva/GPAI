@@ -51,11 +51,12 @@ class TwoStageCompassLoss(nn.Module):
 
 
 class TrainerCompassTwoStage:
-    def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None,
+    def __init__(self, optimizer_main, optimizer_adv, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None,
                  progressive_sigmoid_scaling=False):
 
         self.check = cfg.check
-        self.optimizer = optimizer
+        self.optimizer = optimizer_main
+        self.optimizer_adv = optimizer_adv
         self.loss_function = loss_function
         self.crop_size = cfg.data.crop_size
         self.nth_slice = cfg.data.take_every_nth_slice
@@ -67,7 +68,6 @@ class TrainerCompassTwoStage:
         self.slice_level_supervision = cfg.data.slice_level_supervision
         self.relevancy_head = cfg.model.relevancy_head
         self.scaling = progressive_sigmoid_scaling
-        self.cfg = cfg
 
         if self.scaling:
             self.scale_step = calculate_scale_step(start_scale=20, end_scale=100, steps_per_epoch=self.steps_in_epoch,
@@ -163,7 +163,7 @@ class TrainerCompassTwoStage:
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
-                tumor_score, Y_hat, out_of_range_relevancy_scores, in_range_relevancy_scores = model.forward(
+                tumor_score, Y_hat, out_of_range_relevancy_scores, in_range_relevancy_scores, adversary_score = model.forward(
                     data,
                     depth_scores=depth_scores,
                     scan_end=meta[3])
@@ -179,15 +179,12 @@ class TrainerCompassTwoStage:
                                                                 tumor_prob=tumor_score, bag_label=bag_label.float(),
                                                                 out_of_range_rel=out_of_range_relevancy_scores,
                                                                 in_range_rel=in_range_relevancy_scores)
-                if self.cfg.training.multi_gpu:
-                    range = model.module.depth_range[1] - model.module.depth_range[0]
-                    range_0 = model.module.depth_range[0].item()
-                    range_1 = model.module.depth_range[1].item()
-                else:
-                    range = model.depth_range[1] - model.depth_range[0]
-                    range_0 = model.depth_range[0].item()
-                    range_1 = model.depth_range[1].item()
 
+                add_loss_function = torch.nn.BCEWithLogitsLoss().cuda()
+                adv_loss = add_loss_function(adversary_score, bag_label)
+
+                if cfg.
+                range = model.module.depth_range[1] - model.module.depth_range[0]
                 range_loss = torch.max(torch.Tensor([0]).cuda(), -1 * range).sum() \
                              + torch.max(torch.Tensor([0.5]).cuda() - range, torch.Tensor([0]).cuda()).sum() \
                              + torch.max(range - torch.Tensor([1]).cuda(), torch.Tensor([0]).cuda()).sum()
@@ -209,7 +206,7 @@ class TrainerCompassTwoStage:
             loss_times.append(loss_time)
 
             ## removed rel_loss for one experiment
-            total_loss = (d_loss + cls_loss + range_loss) / self.update_freq
+            total_loss = (d_loss + cls_loss + range_loss - adv_loss) / self.update_freq
 
             error = calculate_classification_error(bag_label, Y_hat)
             epoch_error += error
@@ -222,20 +219,22 @@ class TrainerCompassTwoStage:
                 backprop_time = time.time() - time_backprop
                 backprop_times.append(backprop_time)
 
+                scaler.scale(adv_loss).backward()
+
                 if (step) % self.update_freq == 0 or (step) == len(data_loader):
 
                     scaler.step(self.optimizer)
+                    scaler.step(self.optimizer_adv)
                     scaler.update()
                     if self.scheduler:
                         self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)
+                    self.optimizer_adv.zero_grad(set_to_none=True)
 
-                if self.cfg.training.multi_gpu:
-                    if self.scaling and model.module.scale < 100:  # for progressively steepening the sigmoid curve (100 is end value)
-                        model.module.scale += self.scale_step
-                else:
-                    if self.scaling and model.scale < 100:
-                        model.scale += self.scale_step
+
+
+                if self.scaling and model.module.scale < 100:  # for progressively steepening the sigmoid curve (100 is end value)
+                    model.module.scale += self.scale_step
 
             epoch_loss += total_loss.item() * self.update_freq
             depth_loss += d_loss.item() * self.update_freq
@@ -276,13 +275,10 @@ class TrainerCompassTwoStage:
         print(
             f"Main classification loss: {round(class_loss, 3)}")
         print(
-            f"Span loss: {span_loss}, Range: {round(range_0, 3)}--{round(range_1, 3)}")
+            f"Span loss: {span_loss}, Range: {round(model.depth_range[0].item(), 3)}--{round(model.depth_range[1].item(), 3)}")
 
         if self.scaling:
-            if self.cfg.training.multi_gpu:
-                results["sigmoid_scale"] = model.module.scale
-            else:
-                results["sigmoid_scale"] = model.scale
+            results["sigmoid_scale"] = model.scale
         results["epoch"] = epoch
         results["loss"] = epoch_loss
         results["depth_loss"] = depth_loss
@@ -291,7 +287,7 @@ class TrainerCompassTwoStage:
         results["relevancy_loss"] = relevancy_loss
         results["span_loss"] = span_loss
         results["f1_score"] = f1
-        results["range1"] = range_0
-        results["range2"] = range_1
+        results["range1"] = model.depth_range[0].item()
+        results["range2"] = model.depth_range[1].item()
 
         return results

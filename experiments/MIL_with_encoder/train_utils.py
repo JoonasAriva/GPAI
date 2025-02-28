@@ -1,5 +1,7 @@
 from __future__ import print_function
 
+import os
+
 import numpy as np
 import torch
 import torch.optim as optim
@@ -10,6 +12,7 @@ from torch.utils.data.distributed import DistributedSampler
 
 from compass_trainer import TrainerCompass
 from compass_two_stage_trainer import TwoStageCompassLoss, TrainerCompassTwoStage
+from data.DistriputedDataCustomSampler import DistributedSamplerWrapper
 from data.kidney_dataloader import KidneyDataloader, AbdomenAtlasLoader
 from data.synth_dataloaders import SynthDataloader
 from depth_trainer import TrainerDepth, DepthLossV2, CompassLoss
@@ -17,13 +20,18 @@ from depth_trainer3D import Trainer3DDepth, DepthLoss3D
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
     ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention, \
     MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2, ResNetDepth, TransDepth, CompassModel, \
-    CompassModelV2, TwoStageCompass, TwoStageCompassV2, TwoStageCompassV3, TwoStageCompassV4, TwoStageCompassV5
+    CompassModelV2, TwoStageCompass, TwoStageCompassV2, TwoStageCompassV3, TwoStageCompassV4, TwoStageCompassV5, \
+    TwoStageCompassV6
 from swin_models import SWINCompass, SWINClassifier
 from trainer import Trainer
-import os
+from trainer_reg import TrainerReg, RegularizedAttentionLoss
 
 def prepare_dataloader(cfg: DictConfig):
     if "kidney" in cfg.data.dataloader:
+        if "pasted" in cfg.data.dataloader:
+            pasted_experiment = True
+        else:
+            pasted_experiment = False
         transforms = tio.Compose(
             [tio.RandomFlip(axes=(0, 1)),
              tio.RandomAffine(scales=(1, 1.2), degrees=(0, 0, 10), translation=(50, 50, 0))])
@@ -32,13 +40,13 @@ def prepare_dataloader(cfg: DictConfig):
             'plane': 'axial', 'center_crop': cfg.data.crop_size, 'downsample': False,
             'roll_slices': cfg.data.roll_slices, 'model_type': cfg.model.model_type,
             'generate_spheres': True if cfg.data.dataloader == 'kidney_synth' else False, 'patchify': cfg.data.patchify,
-            'no_lungs': cfg.data.no_lungs}
+            'no_lungs': cfg.data.no_lungs, "pasted_experiment": pasted_experiment}
         train_dataset = KidneyDataloader(type="train",
                                          augmentations=None if not cfg.data.data_augmentations else transforms,
                                          **dataloader_params, random_experiment=cfg.data.random_experiment)
         test_dataset = KidneyDataloader(type="test", **dataloader_params)
 
-        loader_kwargs = {'num_workers': 7, 'pin_memory': True} if torch.cuda.is_available() else {}
+        loader_kwargs = {'num_workers': 6, 'pin_memory': True} if torch.cuda.is_available() else {}
 
         # create sampler for training set
         class_sample_count = [train_dataset.controls, train_dataset.cases]
@@ -50,13 +58,17 @@ def prepare_dataloader(cfg: DictConfig):
                                                                  replacement=False)
 
         if cfg.training.multi_gpu == True:
-            print("creating distributed sampler")
-            # sampler = DistributedSamplerWrapper(sampler=sampler, num_replicas=torch.cuda.device_count())
-            print("rank in train utils: ", int(os.environ["LOCAL_RANK"]))
-            sampler = DistributedSampler(train_dataset, num_replicas=2, rank=int(os.environ["LOCAL_RANK"]), shuffle=True)
+            sampler = DistributedSamplerWrapper(sampler=sampler, num_replicas=int(torch.cuda.device_count()),
+                                                rank=int(os.environ["LOCAL_RANK"]), shuffle=True)
+            # sampler_train = DistributedSampler(train_dataset, num_replicas=2, rank=int(os.environ["LOCAL_RANK"]),
+            #                                   shuffle=True)
+            sampler_test = DistributedSampler(test_dataset, num_replicas=int(torch.cuda.device_count()),
+                                              rank=int(os.environ["LOCAL_RANK"]),
+                                              shuffle=True)
         train_loader = data_utils.DataLoader(train_dataset, batch_size=cfg.data.batch_size, sampler=sampler,
                                              **loader_kwargs)
         test_loader = data_utils.DataLoader(test_dataset, batch_size=cfg.data.batch_size, shuffle=False,
+                                            sampler=sampler_test if cfg.training.multi_gpu == True else None,
                                             **loader_kwargs)
 
     elif cfg.data.dataloader == "synthetic":
@@ -145,6 +157,8 @@ def pick_model(cfg: DictConfig):
         model = TwoStageCompassV4(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
     elif cfg.model.name == 'twostagecompassV5':
         model = TwoStageCompassV5(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
+    elif cfg.model.name == 'twostagecompassV6':
+        model = TwoStageCompassV6(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
     elif cfg.model.name == 'swincompassV1':
         model = SWINCompass()
     elif cfg.model.name == 'swinV1':
@@ -171,6 +185,11 @@ def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch):
         loss_function = DepthLoss3D(step=0.5).cuda()
         trainer = Trainer3DDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                                  steps_in_epoch=steps_in_epoch)
+    elif cfg.experiment == "attention_reg":
+        loss_function = RegularizedAttentionLoss().cuda()
+        trainer = TrainerReg(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                                 steps_in_epoch=steps_in_epoch)
+
     else:
         loss_function = torch.nn.BCEWithLogitsLoss().cuda()
         trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
@@ -182,8 +201,12 @@ def prepare_optimizer(cfg, model):
     if cfg.experiment == 'compass_twostage':
 
         boundary_name = ['depth_range']
+        adversary_name = ['adversary_classifier']
         boundary_params = [param for name, param in model.named_parameters() if name in boundary_name]
-        base_params = [param for name, param in model.named_parameters() if name not in boundary_name]
+
+        base_params = [param for name, param in model.named_parameters() if
+                       name not in boundary_name and name not in adversary_name]
+        adversary_params = [param for name, param in model.named_parameters() if name in adversary_name]
 
         params = [
             {"params": [*base_params], "lr": cfg.training.learning_rate, 'weight_decay': cfg.training.weight_decay},
@@ -191,6 +214,7 @@ def prepare_optimizer(cfg, model):
             {"params": boundary_params, "lr": cfg.training.learning_rate * 10, 'weight_decay': 0}
             # Second group, no decay for boundary parameters
         ]
+
         optimizer = optim.Adam(params, lr=cfg.training.learning_rate, betas=(0.9, 0.999))
     else:
         optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),

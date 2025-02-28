@@ -82,7 +82,7 @@ class ResNetAttentionV3(nn.Module):
         for attention_head in self.attention_heads:
             attention_head.eval()
 
-    def forward(self, x, scan_end, scorecam=False):
+    def forward(self, x, scan_end, cam=False):
         out = dict()
         H = self.backbone(x)
         H = self.adaptive_pooling(H)
@@ -105,9 +105,10 @@ class ResNetAttentionV3(nn.Module):
         A = F.softmax(unnorm_A, dim=1)
         # A = unnorm_A / (torch.sum(unnorm_A) + 0.01)
 
-        if scorecam:
+        if cam:
             Y_probs = self.classifier(H)
             out['scores'] = Y_probs
+            out['attention_weights'] = unnorm_A
             return out
 
         M = torch.mm(A, H)
@@ -118,7 +119,7 @@ class ResNetAttentionV3(nn.Module):
 
         out['predictions'] = Y_hat
         out['scores'] = Y_prob
-        out['weights'] = A
+        out['attention_weights'] = unnorm_A
         return out  # Y_prob, Y_hat, unnorm_A
 
 
@@ -808,8 +809,8 @@ class ResNetDepth(nn.Module):
         self.backbone = nn.Sequential(*modules)
 
     def forward(self, x, scan_end):
-        print(f"Forward pass on {x.device}")
-        print("x shape: ", x.shape)
+        # print(f"Forward pass on {x.device}")
+        # print("x shape: ", x.shape)
         H = self.backbone(x)
         H = self.adaptive_pooling(H)
         H = H[:scan_end]
@@ -1184,7 +1185,7 @@ class TwoStageCompassV5(ResNetDepth):  # adding inverted sigmoid for non rel sta
         self.scale = 20
         self.fixed_compass = fixed_compass
 
-    def forward(self, x, scan_end, depth_scores, cam=False):
+    def forward(self, x, scan_end, depth_scores=None, cam=False):
 
         H = self.backbone(x)
         H = self.adaptive_pooling(H)
@@ -1196,7 +1197,7 @@ class TwoStageCompassV5(ResNetDepth):  # adding inverted sigmoid for non rel sta
 
         if not cam:
 
-            tumor_attention = self.tumor_attention_head(H)
+            # tumor_attention = self.tumor_attention_head(H)
             # Compute the range-based mask
             mask_low = torch.sigmoid(
                 self.scale * (depth_scores - self.depth_range[0]))  # Smooth step above threshold_low
@@ -1207,7 +1208,7 @@ class TwoStageCompassV5(ResNetDepth):  # adding inverted sigmoid for non rel sta
             # Calculate the mean for each category
             eps = 1e-8  # Small value to prevent division by zero
 
-            sum_in_range = (H * range_mask * tumor_attention).sum(dim=0)
+            sum_in_range = (H * range_mask).sum(dim=0)
 
             count_in_range = range_mask.sum(dim=0) + eps  # Total weight (add epsilon for numerical stability)
 
@@ -1226,7 +1227,76 @@ class TwoStageCompassV5(ResNetDepth):  # adding inverted sigmoid for non rel sta
             out_of_range_relevancy_scores = self.relevancy_classifier(mean_out_of_range)
             in_range_relevancy_scores = self.relevancy_classifier(mean_in_range)
 
-            return depth_scores, tumor_score, Y_hat, out_of_range_relevancy_scores, in_range_relevancy_scores  # , self.tumor_classifier(
+            return tumor_score, Y_hat, out_of_range_relevancy_scores, in_range_relevancy_scores  # , self.tumor_classifier(
+            # H), self.relevancy_classifier(H)
+
+        else:
+            out = dict()
+            out["depth_scores"] = depth_scores
+            out["scores"] = self.tumor_classifier(H)
+            out["relevancy_scores"] = self.relevancy_classifier(H)
+            return out
+
+
+class TwoStageCompassV6(ResNetDepth):  # adding adversary cls head, removed tumor attention
+    def __init__(self, instnorm=False, fixed_compass=False, resnet_type="18"):
+        super().__init__(instnorm, resnet_type)
+
+        self.tumor_classifier = nn.Linear(512, 1)
+        # self.tumor_attention_head = AttentionHeadV3(512, 128, 1)
+        self.relevancy_classifier = nn.Linear(512, 1)
+        # self.depth_range = nn.Parameter(torch.Tensor([-0.5, 0.2]))
+        self.depth_range = nn.Parameter(torch.Tensor([-0.35, 0.35]))
+        self.adversary_classifier = nn.Linear(512, 1)
+        self.sigmoid = nn.Sigmoid()
+
+        self.scale = 20
+        self.fixed_compass = fixed_compass
+
+    def forward(self, x, scan_end, depth_scores, cam=False):
+
+        H = self.backbone(x)
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+        H = H[:scan_end]
+
+        if not self.fixed_compass:
+            depth_scores = self.classifier(H)
+
+        if not cam:
+
+            # Compute the range-based mask
+            mask_low = torch.sigmoid(
+                self.scale * (depth_scores - self.depth_range[0]))  # Smooth step above threshold_low
+            mask_high = torch.sigmoid(
+                self.scale * (self.depth_range[1] - depth_scores))  # Smooth step below threshold_high
+            range_mask = mask_low * mask_high  # Range mask: ~1 for in-range values, ~0 otherwise
+
+            # Calculate the mean for each category
+            eps = 1e-8  # Small value to prevent division by zero
+
+            sum_in_range = (H * range_mask).sum(dim=0)
+
+            count_in_range = range_mask.sum(dim=0) + eps  # Total weight (add epsilon for numerical stability)
+
+            mean_in_range = torch.unsqueeze(sum_in_range / count_in_range, 0)
+
+            sum_out_of_range = (H * (1 - range_mask)).sum(dim=0)
+            count_out_of_range = (1 - range_mask).sum(dim=0) + eps  # Total weight
+            mean_out_of_range = torch.unsqueeze(sum_out_of_range / count_out_of_range, 0)
+
+            # Pass the mean feature vectors to classifiers
+            tumor_score = self.tumor_classifier(mean_in_range)
+            prediction = self.sigmoid(tumor_score)
+            Y_hat = torch.ge(prediction, 0.5).float()
+
+            out_of_range_relevancy_scores = self.relevancy_classifier(mean_out_of_range)
+            in_range_relevancy_scores = self.relevancy_classifier(mean_in_range)
+            adversary_scores = self.adversary_classifier(mean_out_of_range)
+
+            return tumor_score, Y_hat, out_of_range_relevancy_scores, in_range_relevancy_scores, adversary_scores
+
+            # , self.tumor_classifier(
             # H), self.relevancy_classifier(H), tumor_attention
 
         else:

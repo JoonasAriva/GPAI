@@ -1,6 +1,5 @@
 from __future__ import print_function
 
-import datetime
 import logging
 import os
 import sys
@@ -12,7 +11,7 @@ import torch
 import torch.optim as optim
 import wandb
 from omegaconf import OmegaConf, DictConfig
-from torch.distributed import init_process_group
+from torch.distributed import init_process_group, all_reduce, ReduceOp
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 # from torchinfo import summary
@@ -31,50 +30,58 @@ np.seterr(divide='ignore', invalid='ignore')
 
 os.environ["WANDB__SERVICE_WAIT"] = "300"
 
-def print_slurm_env():
-    slurm_env = "\n".join(
-        [
-            "=" * 80,
-            f"SLURM Process: {os.environ.get('SLURM_PROCID', 'N/A')=}",
-            "=" * 80,
-            f"{os.environ.get('SLURM_NTASKS', 'N/A')=}",
-            f"{os.environ.get('SLURM_LOCALID', 'N/A')=}",
-            f"{os.environ.get('RANK', 'N/A')=}",
-            f"{os.environ.get('LOCAL_RANK', 'N/A')=}",
-            f"{os.environ.get('WORLD_SIZE', 'N/A')=}",
-            f"{os.environ.get('MASTER_ADDR', 'N/A')=}",
-            f"{os.environ.get('MASTER_PORT', 'N/A')=}",
-            f"{os.environ.get('ROCR_VISIBLE_DEVICES', 'N/A')=}",
-            f"{os.environ.get('SLURM_JOB_GPUS', 'N/A')=}",
-            f"{os.sched_getaffinity(0)=}",
-            f"{os.environ.get('TORCH_NCCL_ASYNC_ERROR_HANDLING', 'N/A')=}",
-            "-" * 80 + "\n",
-        ]
-    )
-    print(slurm_env, flush=True)
+torch.backends.cudnn.benchmark = True
+
+
+def print_multi_gpu(str, local_rank):
+    if local_rank == 0:
+        print(str)
+
+
+def log_multi_gpu(str, local_rank):
+    if local_rank == 0:
+        logging.info(str)
+
+
+def reduce_results_dict(results):
+    new_results = dict()
+    for k, v in results.items():
+        metric = torch.Tensor([v]).cuda()
+        all_reduce(metric, op=ReduceOp.SUM)
+        avg_metric = metric.item() / torch.cuda.device_count()
+        new_results[k] = avg_metric
+    return new_results
+
 
 @hydra.main(config_path="config", config_name="config", version_base='1.1')
 def main(cfg: DictConfig):
-    print(OmegaConf.to_yaml(cfg))
-    print(f"Running {cfg.experiment}, Work in {os.getcwd()}")
+    if cfg.training.multi_gpu:
+        init_process_group(backend="nccl")
+        local_rank = int(os.environ['LOCAL_RANK'])
+    else:
+        local_rank = 0
+
+    n_gpus = torch.cuda.device_count()
+    log_multi_gpu("Using {} GPUs".format(n_gpus), local_rank)
+
+    log_multi_gpu(OmegaConf.to_yaml(cfg), local_rank)
+    log_multi_gpu(f"Running {cfg.experiment}, Work in {os.getcwd()}", local_rank)
 
     np.random.seed(cfg.training.seed)
     torch.manual_seed(cfg.training.seed)
 
     if torch.cuda.is_available():
         torch.cuda.manual_seed(cfg.training.seed)
-        print('\nGPU is ON!')
+        print_multi_gpu('\nGPU is ON!', local_rank)
 
-    if cfg.training.multi_gpu:
-        #torch.multiprocessing.set_start_method("spawn")
-        #local_rank = int(os.environ['LOCAL_RANK'])
-        init_process_group(backend="nccl")
-    print_slurm_env()
-    print('Load Train and Test Set')
+    log_multi_gpu('Load Train and Test Set', local_rank)
 
     train_loader, test_loader = prepare_dataloader(cfg)
-    steps_with_parnu = 1250
-    steps_in_epoch = steps_with_parnu // cfg.data.batch_size  # before pärnu it was 500
+
+    steps_in_epoch = 1250 // n_gpus  # before pärnu it was 500
+    if cfg.data.dataloader == 'kidney_pasted':
+        steps_in_epoch = 478 // n_gpus
+
     if cfg.data.dataloader == "kidney_real":
         proj_name = "MIL_encoder_24"
     elif cfg.data.dataloader == "synthetic" or "kidney_synth":
@@ -87,8 +94,10 @@ def main(cfg: DictConfig):
             proj_name = "depth"
     if cfg.experiment == 'swin':
         proj_name = "swin_compass"
+    if cfg.data.dataloader == 'kidney_pasted':
+        proj_name = "MIL_encoder_24"
 
-    logging.info('Init Model')
+    log_multi_gpu('Init Model', local_rank)
     model = pick_model(cfg)
 
     if cfg.model.pretrained:
@@ -104,21 +113,19 @@ def main(cfg: DictConfig):
         model.load_state_dict(
             torch.load(os.path.join(cfg.checkpoint, 'current_model.pth')))
         resume_run = True
-    #if torch.cuda.is_available():
-    #   model.cuda()
 
     if cfg.training.multi_gpu == True:
 
-        n_gpus = torch.cuda.device_count()
-        local_rank = int(os.environ["LOCAL_RANK"])
         torch.cuda.set_device(local_rank)
         model.cuda()
-        print("Using {} GPUs".format(n_gpus))
-        print("Local rank: {}".format(local_rank))
         model = DDP(  # <- We need to wrap the model with DDP
             model,
             device_ids=[local_rank],  # <- and specify the device_ids/output_device
+            find_unused_parameters=True
         )
+    else:
+        if torch.cuda.is_available():
+            model.cuda()
 
     optimizer = prepare_optimizer(cfg, model)
 
@@ -134,7 +141,7 @@ def main(cfg: DictConfig):
 
     trainer = pick_trainer(cfg, optimizer, scheduler, steps_in_epoch)
 
-    if not cfg.check:
+    if not cfg.check and local_rank == 0:
         experiment = wandb.init(project=proj_name, anonymous='must')
         if not resume_run:
             experiment.config.update(
@@ -165,8 +172,10 @@ def main(cfg: DictConfig):
         epoch_results.update(train_results)
         epoch_results.update(test_results)
 
+        # epoch_results = reduce_results_dict(epoch_results)
+        # print_multi_gpu(epoch_results, local_rank)
         if cfg.check:
-            logging.info("Model check completed")
+            log_multi_gpu("Model check completed", local_rank)
             return
 
         Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
@@ -186,14 +195,20 @@ def main(cfg: DictConfig):
                 # break
             not_improved_epochs += 1
 
-        experiment.log(epoch_results)
-        torch.save(model.state_dict(), str(dir_checkpoint / 'current_model.pth'))
-        torch.save(optimizer.state_dict(), str(dir_checkpoint / 'current_optimizer.pth'))
-        torch.save(scheduler.state_dict(), str(dir_checkpoint / 'current_scheduler.pth'))
+        if cfg.training.multi_gpu == True:
+            epoch_results = reduce_results_dict(epoch_results)
+            if local_rank == 0:
+                logging.info("Logging results to wandb")
+                experiment.log(epoch_results)
 
-    torch.save(model.state_dict(), str(dir_checkpoint / 'last_model.pth'))
-    logging.info(f'Last checkpoint! Checkpoint {epoch} saved!')
-    logging.info(f"Training completed, best_metric (f1-test): {best_f1:.4f} at epoch: {best_epoch}")
+                torch.save(model.module.state_dict(), str(dir_checkpoint / 'current_model.pth'))
+                torch.save(optimizer.state_dict(), str(dir_checkpoint / 'current_optimizer.pth'))
+                torch.save(scheduler.state_dict(), str(dir_checkpoint / 'current_scheduler.pth'))
+
+    if local_rank == 0:
+        torch.save(model.state_dict(), str(dir_checkpoint / 'last_model.pth'))
+        logging.info(f'Last checkpoint! Checkpoint {epoch} saved!')
+        logging.info(f"Training completed, best_metric (f1-test): {best_f1:.4f} at epoch: {best_epoch}")
 
 
 if __name__ == "__main__":

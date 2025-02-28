@@ -99,10 +99,11 @@ class ScoreCAM_for_attention(BaseCAM):
         b, c, h, w = input.size()
 
         self.model_arch.zero_grad()
-        out = self.model_arch(input, scan_end=scan_end, scorecam=True)  # depth_scores=depth_scores,
+        out = self.model_arch(input, scan_end=scan_end, cam=True)  # , depth_scores=depth_scores)
 
-        scores = out["scores"]
-
+        #scores = out["scores"]
+        scores = out["attention_weights"]
+        #rel_scores = out["relevancy_scores"]
         important_slice_indices = scores.cpu().flatten().argsort()[-6:]
 
         # position_scores, tumor_score, rel_scores
@@ -137,7 +138,7 @@ class ScoreCAM_for_attention(BaseCAM):
                 # upsampling
                 saliency_map = torch.unsqueeze(activations[:, i, :, :], 1)
                 if saliency_map.max() == saliency_map.min():
-                    #print(i, "min = max, skipping")
+                    # print(i, "min = max, skipping")
                     min_per_channel = saliency_map.min(dim=2).values.min(dim=2).values.view(-1, 1, 1, 1)
                     max_per_channel = saliency_map.max(dim=2).values.max(dim=2).values.view(-1, 1, 1, 1)
                     # print("min and max per channel", min_per_channel, max_per_channel)
@@ -162,14 +163,15 @@ class ScoreCAM_for_attention(BaseCAM):
 
                 filtered_input = input[important_slice_indices] * norm_saliency_map
 
-                out = self.model_arch(filtered_input, scan_end=len(important_slice_indices), scorecam=True)
-                score = out['scores']
+                out = self.model_arch(filtered_input, scan_end=len(important_slice_indices), cam=True)
+                score = out["attention_weights"]
 
                 # THIS PART IS FOR COMPASS MODELS
-                # position_scores, new_tumor_score, new_rel_score = self.model_arch(filtered_input,
-                #                                                                   depth_scores=depth_scores, scan_end=len(important_slice_indices),
-                #                                                                   cam=True)
-                #
+                # out = self.model_arch(filtered_input, depth_scores=depth_scores,
+                #                       scan_end=len(important_slice_indices), cam=True)
+                # position_scores = out["depth_scores"]
+                # new_tumor_score = out["scores"]
+                # new_rel_score = out["relevancy_scores"]
                 # if tumor:
                 #     score = new_tumor_score
                 # else:
@@ -182,7 +184,7 @@ class ScoreCAM_for_attention(BaseCAM):
 
                 if torch.isnan(new_attention).any():
                     print("new attention contains nans: ")
-                    print(new_attention)
+                # print(new_attention)
                 maxitem = torch.max(new_attention).item()
                 minitem = torch.min(new_attention).item()
 
@@ -192,32 +194,30 @@ class ScoreCAM_for_attention(BaseCAM):
                     minest_item = minitem
                 score_saliency_map += new_attention * torch.squeeze(saliency_map)
 
-        if torch.isnan(score_saliency_map).any():
-            print("score sal map contains nans: ")
-            print(score_saliency_map)
-        # print("nan after loop?: ", torch.isnan(score_saliency_map).any())
-        print("looking for tumor?: ", tumor)
-        print("max and min:", maxest_item, minest_item)
-        # if tumor:
-        #    score_saliency_map = F.relu(score_saliency_map)
+                if torch.isnan(score_saliency_map).any():
+                    print("score sal map contains nans: ")
 
-        min_per_channel = score_saliency_map.min(dim=1).values.min(dim=1).values.view(-1, 1, 1)
+                # print("nan after loop?: ", torch.isnan(score_saliency_map).any())
+                # print("looking for tumor?: ", tumor)
+                # print("max and min:", maxest_item, minest_item)
+                # if tumor:
+                #    score_saliency_map = F.relu(score_saliency_map)
 
-        max_per_channel = score_saliency_map.max(dim=1).values.max(dim=1).values.view(-1, 1, 1)
-        # print("mins and maxs per channel (6):", min_per_channel, max_per_channel)
-        # good_activations = good_activations.view(-1)
+                min_per_channel = score_saliency_map.min(dim=1).values.min(dim=1).values.view(-1, 1, 1)
 
-        if torch.isnan(score_saliency_map).any():
-            print("score sal map contains nans2: ")
-            print(score_saliency_map)
+                max_per_channel = score_saliency_map.max(dim=1).values.max(dim=1).values.view(-1, 1, 1)
+                # print("mins and maxs per channel (6):", min_per_channel, max_per_channel)
+                # good_activations = good_activations.view(-1)
 
-        score_saliency_map = (score_saliency_map - min_per_channel) / (max_per_channel - min_per_channel)
+                if torch.isnan(score_saliency_map).any():
+                    print("score sal map contains nans2: ")
 
-        if torch.isnan(score_saliency_map).any():
-            print("score sal map contains nans3: ")
-            print(score_saliency_map)
+                score_saliency_map = (score_saliency_map - min_per_channel) / (max_per_channel - min_per_channel)
 
-        return score_saliency_map, important_slice_indices, scores  # , rel_scores[important_slice_indices]
+                if torch.isnan(score_saliency_map).any():
+                    print("score sal map contains nans3: ")
+
+        return score_saliency_map, important_slice_indices, scores#, rel_scores[important_slice_indices]
 
     def __call__(self, input, scan_end, depth_scores=None, retain_graph=False, tumor=True):
         return self.forward(input, scan_end, depth_scores, retain_graph, tumor)

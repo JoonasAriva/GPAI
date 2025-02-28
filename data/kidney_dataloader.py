@@ -12,7 +12,7 @@ from sklearn.model_selection import train_test_split
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
 sys.path.append('/users/arivajoo/GPAI/data')
-from data_utils import get_kidney_datasets, downsample_scan, normalize_scan, set_orientation_nib
+from data_utils import get_kidney_datasets, downsample_scan, normalize_scan, set_orientation_nib, get_pasted_dateset
 
 
 def make_single_sphere_coords():
@@ -46,7 +46,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
                  sample_shifting: bool = False, plane: str = 'axial',
                  center_crop: int = 120, roll_slices=False, model_type="2D", generate_spheres: bool = False,
                  patchify: bool = False, patch_size: int = 128, no_lungs: bool = False,
-                 random_experiment: bool = False):
+                 random_experiment: bool = False, pasted_experiment: bool = False):
         super().__init__()
         self.roll_slices = roll_slices
         self.as_rgb = as_rgb
@@ -65,13 +65,16 @@ class KidneyDataloader(torch.utils.data.Dataset):
         if roll_slices:
             center_crop = center_crop
         self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))  # 500
-        # self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop - 2), method="end", constant_values=0)
+        #self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop - 2), method="end", constant_values=0)
         self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop), method="end", constant_values=0)
         self.resizer = Resize(spatial_size=512, size_mode="longest")
         print("PLANE: ", plane)
         print("CROP SIZE: ", center_crop)
 
-        control, tumor = get_kidney_datasets(type, no_lungs=no_lungs)
+        if pasted_experiment and type == 'train':
+            control, tumor = get_pasted_dateset()
+        else:
+            control, tumor = get_kidney_datasets(type, no_lungs=no_lungs)
 
         control_labels = [[False]] * len(control)
         self.controls = len(control)
@@ -231,6 +234,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
             return x, y, (case_id, nth_slice, spacings, height_before_padding, path)
         else:
             #x = self.padder_z(x).as_tensor()
+            x = torch.squeeze(x)
             return x, y, (case_id, nth_slice, spacings, height_before_padding, path)
 
 

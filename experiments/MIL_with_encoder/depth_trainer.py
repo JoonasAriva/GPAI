@@ -171,8 +171,7 @@ class TrainerDepth:
 
             #data = data.to(self.device, dtype=torch.float16, non_blocking=True)
             data = data.cuda(non_blocking=True).to(dtype=torch.float16)
-            print("data device: ", data.device, "data shape: ", data.shape)
-            print("device: ", int(os.environ["LOCAL_RANK"]))
+
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 

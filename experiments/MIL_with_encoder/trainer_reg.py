@@ -22,7 +22,23 @@ def calculate_classification_error(Y, Y_hat):
     return error
 
 
-class Trainer:
+class RegularizedAttentionLoss(nn.Module):
+    def __init__(self, alpha=0.1, beta=0.1):
+        super().__init__()
+        self.cls_loss = torch.nn.BCEWithLogitsLoss()
+        self.alpha = alpha
+        self.beta = beta
+
+    def forward(self, prediction_scores, bag_label, attention_logits):
+        cls_loss = self.cls_loss(prediction_scores, bag_label)
+        # attention loss
+        l1_term = self.alpha * torch.norm(attention_logits, p=1)
+        # Variance regularization to prevent all logits from being the same
+        variance_term = self.beta * torch.var(attention_logits, dim=1).mean()
+        return cls_loss, l1_term, variance_term
+
+
+class TrainerReg:
     def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None):
 
         self.check = cfg.check
@@ -63,6 +79,8 @@ class Trainer:
         results = dict()
         epoch_loss = 0.
         class_loss = 0.
+        l1_loss = 0.
+        variance_loss = 0.
         epoch_error = 0.
         step = 0
         nr_of_batches = len(data_loader)
@@ -111,15 +129,15 @@ class Trainer:
 
                 out = model.forward(data, scan_end=meta[3])
 
-                Y_hat = out["predictions"]
-                Y_prob = out["scores"]
-
+                Y_hat = out['predictions']
+                Y_prob = out['scores']
+                attention_logits = out['attention_weights']
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
-                loss = self.loss_function(Y_prob, bag_label.float())
+                cls_loss, l1_loss, var_loss = self.loss_function(Y_prob, bag_label.float(), attention_logits)
 
-                total_loss = loss
+                total_loss = cls_loss + l1_loss - var_loss
 
                 total_loss /= self.update_freq
 
@@ -144,7 +162,9 @@ class Trainer:
             # torch.cuda.reset_peak_memory_stats()
 
             epoch_loss += total_loss.item() * self.update_freq
-            class_loss += loss.item()
+            class_loss += cls_loss.item()
+            l1_loss += l1_loss.item()
+            variance_loss += var_loss.item()
 
             error = calculate_classification_error(bag_label, Y_hat)
 
@@ -165,6 +185,8 @@ class Trainer:
         epoch_loss /= nr_of_batches
         epoch_error /= nr_of_batches
         class_loss /= nr_of_batches
+        l1_loss /= nr_of_batches
+        variance_loss /= nr_of_batches
 
         outputs = np.concatenate(outputs)
         targets = np.concatenate(targets)
@@ -187,5 +209,7 @@ class Trainer:
         results["loss"] = epoch_loss
         results["error"] = epoch_error
         results["f1_score"] = f1
+        results["l1_loss"] = l1_loss
+        results["variance_loss"] = variance_loss
 
         return results

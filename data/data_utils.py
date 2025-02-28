@@ -257,6 +257,25 @@ def get_kidney_datasets(type: str, no_lungs: bool = False):
     return all_controls, all_tumors
 
 
+def get_pasted_dateset():
+    base_path = '/project/project_465001111/ct_data/'
+    tuh_train_data_path = base_path + 'kidney/tuh_train/'
+    tuh_test_data_path = base_path + 'kidney/tuh_test/'
+    pasted_tumors_path = '/scratch/project_465001111/ct_data/kidney/pasted_tumors/*.nii.gz'
+
+    all_controls = []
+
+    for data_path in [tuh_train_data_path, tuh_test_data_path]:
+        control_path = data_path + 'controls/images/train/*nii.gz'
+
+        control = glob.glob(control_path)
+        all_controls.extend(control)
+
+    all_tumors = glob.glob(pasted_tumors_path)
+
+    return all_controls, all_tumors
+
+
 import time
 
 

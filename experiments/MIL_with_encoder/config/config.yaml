@@ -2,10 +2,10 @@ hydra:
   run:
     dir: results/${experiment}/${hydra.job.name}/${model.name}/${data.dataloader}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-experiment: depth
+experiment: attention_reg
 
 training:
-  epochs: 50
+  epochs: 70
   learning_rate: 1e-4
   weight_decay: 5e-4
   weight_update_freq: 1
@@ -15,9 +15,9 @@ training:
 
 model:
   classes: 1
-  name: 'resnetdepth'
+  name: 'resnet18V3'
   model_type: '2D'
-  fixed_compass: False
+  fixed_compass: True
   pretrained_imagenet: True
   pretrained: False
   neighbour_range: 0
@@ -28,7 +28,7 @@ model:
   progressive_sigmoid_scaling: True
 
 data:
-  batch_size: 2
+  batch_size: 1
   take_every_nth_slice: 3
   data_augmentations: True
   plane: axial
@@ -42,4 +42,4 @@ data:
   patchify: False
   slice_level_supervision: 0
   random_experiment: False
-check: True
+check: False
