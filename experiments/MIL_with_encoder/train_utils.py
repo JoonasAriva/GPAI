@@ -11,6 +11,7 @@ from omegaconf import DictConfig
 from torch.utils.data.distributed import DistributedSampler
 
 from compass_trainer import TrainerCompass
+from compass_two_stage_adversary import TrainerCompassTwoStageAdv
 from compass_two_stage_trainer import TwoStageCompassLoss, TrainerCompassTwoStage
 from data.DistriputedDataCustomSampler import DistributedSamplerWrapper
 from data.kidney_dataloader import KidneyDataloader, AbdomenAtlasLoader
@@ -25,6 +26,7 @@ from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerP
 from swin_models import SWINCompass, SWINClassifier
 from trainer import Trainer
 from trainer_reg import TrainerReg, RegularizedAttentionLoss
+
 
 def prepare_dataloader(cfg: DictConfig):
     if "kidney" in cfg.data.dataloader:
@@ -156,7 +158,9 @@ def pick_model(cfg: DictConfig):
     elif cfg.model.name == 'twostagecompassV4':
         model = TwoStageCompassV4(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
     elif cfg.model.name == 'twostagecompassV5':
-        model = TwoStageCompassV5(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
+        model = TwoStageCompassV5(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass,
+                                  ghostnorm=cfg.model.ghostnorm, range_0=-4,
+                                  range_1=4)
     elif cfg.model.name == 'twostagecompassV6':
         model = TwoStageCompassV6(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
     elif cfg.model.name == 'swincompassV1':
@@ -166,9 +170,9 @@ def pick_model(cfg: DictConfig):
     return model
 
 
-def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch):
+def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch, adv_optimizer=None):
     if cfg.experiment == "depth":
-        loss_function = DepthLossV2(step=0.1).cuda()  # was 0.01
+        loss_function = DepthLossV2(step=0.05).cuda()  # was 0.01 # then 0.1, but it might be too sparse
         trainer = TrainerDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function,
                                cfg=cfg,
                                steps_in_epoch=steps_in_epoch)
@@ -188,8 +192,14 @@ def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch):
     elif cfg.experiment == "attention_reg":
         loss_function = RegularizedAttentionLoss().cuda()
         trainer = TrainerReg(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
-                                 steps_in_epoch=steps_in_epoch)
-
+                             steps_in_epoch=steps_in_epoch)
+    elif cfg.experiment == "compass_twostage_adv":
+        loss_function = TwoStageCompassLoss(step=0.01, fixed_compass=cfg.model.fixed_compass).cuda()
+        trainer = TrainerCompassTwoStageAdv(optimizer_main=optimizer, optimizer_adv=adv_optimizer, scheduler=scheduler,
+                                            loss_function=loss_function,
+                                            cfg=cfg,
+                                            steps_in_epoch=steps_in_epoch,
+                                            progressive_sigmoid_scaling=cfg.model.progressive_sigmoid_scaling)
     else:
         loss_function = torch.nn.BCEWithLogitsLoss().cuda()
         trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
@@ -198,10 +208,11 @@ def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch):
 
 
 def prepare_optimizer(cfg, model):
-    if cfg.experiment == 'compass_twostage':
+    if 'compass_twostage' in cfg.experiment:
 
         boundary_name = ['depth_range']
-        adversary_name = ['adversary_classifier']
+        adversary_name = ['module.adversary_classifier.weight', 'module.ladversary_classifier.bias']
+
         boundary_params = [param for name, param in model.named_parameters() if name in boundary_name]
 
         base_params = [param for name, param in model.named_parameters() if
@@ -211,11 +222,15 @@ def prepare_optimizer(cfg, model):
         params = [
             {"params": [*base_params], "lr": cfg.training.learning_rate, 'weight_decay': cfg.training.weight_decay},
             # First group
-            {"params": boundary_params, "lr": cfg.training.learning_rate * 10, 'weight_decay': 0}
+            {"params": boundary_params, "lr": cfg.training.learning_rate * 1000, 'weight_decay': 0}
             # Second group, no decay for boundary parameters
         ]
 
         optimizer = optim.Adam(params, lr=cfg.training.learning_rate, betas=(0.9, 0.999))
+
+        if len(adversary_params) > 0:
+            optimizer_adv = optim.Adam(adversary_params, lr=cfg.training.learning_rate, betas=(0.9, 0.999))
+            return optimizer, optimizer_adv
     else:
         optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
                                weight_decay=cfg.training.weight_decay)

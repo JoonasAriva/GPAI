@@ -50,10 +50,11 @@ class TwoStageCompassLoss(nn.Module):
         return d_loss, cls_loss, rel_loss
 
 
-class TrainerCompassTwoStage:
+class TrainerCompassTwoStageAdv:
     def __init__(self, optimizer_main, optimizer_adv, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None,
                  progressive_sigmoid_scaling=False):
 
+        self.cfg = cfg
         self.check = cfg.check
         self.optimizer = optimizer_main
         self.optimizer_adv = optimizer_adv
@@ -109,6 +110,7 @@ class TrainerCompassTwoStage:
         class_loss = 0.
         relevancy_loss = 0.
         span_loss = 0.
+        adversary_loss = 0.
 
         step = 0
         nr_of_batches = len(data_loader)
@@ -180,28 +182,25 @@ class TrainerCompassTwoStage:
                                                                 out_of_range_rel=out_of_range_relevancy_scores,
                                                                 in_range_rel=in_range_relevancy_scores)
 
-                add_loss_function = torch.nn.BCEWithLogitsLoss().cuda()
-                adv_loss = add_loss_function(adversary_score, bag_label)
+                adv_loss_function = torch.nn.BCEWithLogitsLoss().cuda()
+                adv_loss = adv_loss_function(adversary_score, bag_label)
 
-                if cfg.
-                range = model.module.depth_range[1] - model.module.depth_range[0]
+                if self.cfg.training.multi_gpu:
+                    range = model.module.depth_range[1] - model.module.depth_range[0]
+                    range_0 = model.module.depth_range[0].item()
+                    range_1 = model.module.depth_range[1].item()
+                else:
+                    range = model.depth_range[1] - model.depth_range[0]
+                    range_0 = model.depth_range[0].item()
+                    range_1 = model.depth_range[1].item()
+
                 range_loss = torch.max(torch.Tensor([0]).cuda(), -1 * range).sum() \
                              + torch.max(torch.Tensor([0.5]).cuda() - range, torch.Tensor([0]).cuda()).sum() \
-                             + torch.max(range - torch.Tensor([1]).cuda(), torch.Tensor([0]).cuda()).sum()
-
+                             + torch.max(range - torch.Tensor([5]).cuda(), torch.Tensor([0]).cuda()).sum()
                 # 1) generate loss if range gets flipped
                 # 2) generate loss if range get smaller than 0.5
-                # 3) generate loss if range gets bigger than 1
-            # max_pos = torch.max(position_scores).item()
-            # min_pos = torch.min(position_scores).item()
+                # 3) generate loss if range gets bigger than 5
 
-            # range_loss2 = torch.max(model.depth_range[1] - max_pos, torch.Tensor([0]).cuda()).sum() + torch.min(
-            #     model.depth_range[0] - min_pos, torch.Tensor([0]).cuda()).abs().sum()
-            #
-            # # 1) generate loss if max position score is smaller than upper range parameter
-            # # 2) vice versa, generate loss if min pos score is larger than lower range parameter
-            # # in summary, range paramters should be inside maximum and minimum scores
-            # range_loss += range_loss2
             loss_time = time.time() - time_loss
             loss_times.append(loss_time)
 
@@ -215,7 +214,7 @@ class TrainerCompassTwoStage:
 
             if train:
                 time_backprop = time.time()
-                scaler.scale(total_loss).backward()
+                scaler.scale(total_loss).backward(retain_graph=True)
                 backprop_time = time.time() - time_backprop
                 backprop_times.append(backprop_time)
 
@@ -231,9 +230,7 @@ class TrainerCompassTwoStage:
                     self.optimizer.zero_grad(set_to_none=True)
                     self.optimizer_adv.zero_grad(set_to_none=True)
 
-
-
-                if self.scaling and model.module.scale < 100:  # for progressively steepening the sigmoid curve (100 is end value)
+                if self.scaling and model.module.scale < 20:  # for progressively steepening the sigmoid curve (100 is end value)
                     model.module.scale += self.scale_step
 
             epoch_loss += total_loss.item() * self.update_freq
@@ -241,6 +238,7 @@ class TrainerCompassTwoStage:
             class_loss += cls_loss.item() * self.update_freq
             relevancy_loss += rel_loss.item() * self.update_freq
             span_loss += range_loss.item() * self.update_freq
+            adversary_loss += adv_loss.item() * self.update_freq
 
             if step >= 6 and self.check:
                 break
@@ -260,6 +258,7 @@ class TrainerCompassTwoStage:
         epoch_error /= nr_of_batches
         relevancy_loss /= nr_of_batches
         span_loss /= nr_of_batches
+        adversary_loss /= nr_of_batches
 
         outputs = np.concatenate(outputs)
         targets = np.concatenate(targets)
@@ -273,12 +272,15 @@ class TrainerCompassTwoStage:
             '{}: loss: {:.4f}, enc error: {:.4f}, f1 macro score: {:.4f}'.format(
                 "Train" if train else "Validation", epoch_loss, epoch_error, f1))
         print(
-            f"Main classification loss: {round(class_loss, 3)}")
+            f"Main classification loss: {round(class_loss, 3)}, Adversary loss: {round(adversary_loss, 3)} ")
         print(
-            f"Span loss: {span_loss}, Range: {round(model.depth_range[0].item(), 3)}--{round(model.depth_range[1].item(), 3)}")
+            f"Span loss: {span_loss}, Range: {round(range_0, 3)}--{round(range_1, 3)}")
 
         if self.scaling:
-            results["sigmoid_scale"] = model.scale
+            if self.cfg.training.multi_gpu:
+                results["sigmoid_scale"] = model.module.scale
+            else:
+                results["sigmoid_scale"] = model.scale
         results["epoch"] = epoch
         results["loss"] = epoch_loss
         results["depth_loss"] = depth_loss
@@ -287,7 +289,8 @@ class TrainerCompassTwoStage:
         results["relevancy_loss"] = relevancy_loss
         results["span_loss"] = span_loss
         results["f1_score"] = f1
-        results["range1"] = model.depth_range[0].item()
-        results["range2"] = model.depth_range[1].item()
+        results["range1"] = range_0
+        results["range2"] = range_1
+        results["adversary_loss"] = adversary_loss
 
         return results

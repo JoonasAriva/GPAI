@@ -2,10 +2,10 @@ hydra:
   run:
     dir: results/${experiment}/${hydra.job.name}/${model.name}/${data.dataloader}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-experiment: attention_reg
+experiment: compass_twostage
 
 training:
-  epochs: 70
+  epochs: 60
   learning_rate: 1e-4
   weight_decay: 5e-4
   weight_update_freq: 1
@@ -15,14 +15,15 @@ training:
 
 model:
   classes: 1
-  name: 'resnet18V3'
+  name: 'twostagecompassV5'
   model_type: '2D'
   fixed_compass: True
   pretrained_imagenet: True
   pretrained: False
   neighbour_range: 0
   num_heads: 1
-  inst_norm: True
+  inst_norm: False
+  ghostnorm: True
   nr_of_blocks: 2
   relevancy_head: True
   progressive_sigmoid_scaling: True
@@ -35,7 +36,6 @@ data:
   dataloader: kidney_real
   crop_size: 302
   as_rgb: True
-
   roll_slices: True
   important_slices_only: False
   no_lungs: False

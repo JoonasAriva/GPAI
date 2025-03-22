@@ -166,8 +166,8 @@ class TrainerDepth:
             step += 1
             gc.collect()
 
-            # data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
-            data = torch.permute(data, (0, 4, 1, 2, 3))
+            data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
+            #data = torch.permute(data, (0, 4, 1, 2, 3))
 
             #data = data.to(self.device, dtype=torch.float16, non_blocking=True)
             data = data.cuda(non_blocking=True).to(dtype=torch.float16)

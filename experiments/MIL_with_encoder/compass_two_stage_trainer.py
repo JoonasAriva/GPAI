@@ -33,8 +33,8 @@ class TwoStageCompassLoss(nn.Module):
         super().__init__()
         self.fixed_compass = fixed_compass
         self.cls_loss = torch.nn.BCEWithLogitsLoss()
-        pos_weight = torch.tensor([2])
-        self.rel_loss = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        # pos_weight = torch.tensor([2])
+        self.rel_loss = torch.nn.BCEWithLogitsLoss()
         self.depth_loss = DepthLossV2(step=step)
 
     def forward(self, depth_predictions, z_spacing, nth_slice, tumor_prob, bag_label, out_of_range_rel, in_range_rel):
@@ -70,7 +70,7 @@ class TrainerCompassTwoStage:
         self.cfg = cfg
 
         if self.scaling:
-            self.scale_step = calculate_scale_step(start_scale=20, end_scale=100, steps_per_epoch=self.steps_in_epoch,
+            self.scale_step = calculate_scale_step(start_scale=0, end_scale=20, steps_per_epoch=self.steps_in_epoch,
                                                    epochs=30)
         if cfg.data.no_lungs:
             path = '/scratch/project_465001111/ct_data/kidney/slice_statistics.csv'
@@ -89,8 +89,8 @@ class TrainerCompassTwoStage:
         if cfg.model.fixed_compass:
             self.fixed_compass = True
             compass_path = "/users/arivajoo/GPAI/experiments/MIL_with_encoder/"
-            self.compass_scores = pd.concat([pd.read_csv(compass_path + "fixed_depth_scores_test_sparse.csv"),
-                                             pd.read_csv(compass_path + "fixed_depth_scores_train_sparse.csv")])
+            self.compass_scores = pd.concat([pd.read_csv(compass_path + "fixed_depth_scores_test_2.csv"),
+                                             pd.read_csv(compass_path + "fixed_depth_scores_train_2.csv")])
         else:
             self.fixed_compass = False
 
@@ -190,11 +190,11 @@ class TrainerCompassTwoStage:
 
                 range_loss = torch.max(torch.Tensor([0]).cuda(), -1 * range).sum() \
                              + torch.max(torch.Tensor([0.5]).cuda() - range, torch.Tensor([0]).cuda()).sum() \
-                             + torch.max(range - torch.Tensor([1]).cuda(), torch.Tensor([0]).cuda()).sum()
+                             + torch.max(range - torch.Tensor([8]).cuda(), torch.Tensor([0]).cuda()).sum()
 
                 # 1) generate loss if range gets flipped
                 # 2) generate loss if range get smaller than 0.5
-                # 3) generate loss if range gets bigger than 1
+                # 3) generate loss if range gets bigger than 1 >> now 5
             # max_pos = torch.max(position_scores).item()
             # min_pos = torch.min(position_scores).item()
 
@@ -209,7 +209,9 @@ class TrainerCompassTwoStage:
             loss_times.append(loss_time)
 
             ## removed rel_loss for one experiment
-            total_loss = (d_loss + cls_loss + range_loss) / self.update_freq
+            if epoch < 8:
+                rel_loss = rel_loss * epoch / 8
+            total_loss = (d_loss + cls_loss + range_loss + rel_loss) / self.update_freq
 
             error = calculate_classification_error(bag_label, Y_hat)
             epoch_error += error
@@ -231,10 +233,10 @@ class TrainerCompassTwoStage:
                     self.optimizer.zero_grad(set_to_none=True)
 
                 if self.cfg.training.multi_gpu:
-                    if self.scaling and model.module.scale < 100:  # for progressively steepening the sigmoid curve (100 is end value)
+                    if self.scaling and model.module.scale < 20:  # for progressively steepening the sigmoid curve (100 is end value)
                         model.module.scale += self.scale_step
                 else:
-                    if self.scaling and model.scale < 100:
+                    if self.scaling and model.scale < 20:
                         model.scale += self.scale_step
 
             epoch_loss += total_loss.item() * self.update_freq

@@ -127,7 +127,11 @@ def main(cfg: DictConfig):
         if torch.cuda.is_available():
             model.cuda()
 
-    optimizer = prepare_optimizer(cfg, model)
+    if cfg.experiment == 'compass_twostage_adv':
+        optimizer, optimizer_adv = prepare_optimizer(cfg, model)
+
+    else:
+        optimizer = prepare_optimizer(cfg, model)
 
     number_of_epochs = cfg.training.epochs
     scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=int(
@@ -139,7 +143,8 @@ def main(cfg: DictConfig):
         scheduler.load_state_dict(torch.load(os.path.join(cfg.checkpoint, 'current_scheduler.pth')))
     # summary(model,input_size=(300,3,512,512))
 
-    trainer = pick_trainer(cfg, optimizer, scheduler, steps_in_epoch)
+    trainer = pick_trainer(cfg, optimizer, scheduler, steps_in_epoch,
+                           adv_optimizer=optimizer_adv if cfg.experiment == "compass_twostage_adv" else None)
 
     if not cfg.check and local_rank == 0:
         experiment = wandb.init(project=proj_name, anonymous='must')
@@ -190,9 +195,9 @@ def main(cfg: DictConfig):
             not_improved_epochs = 0
 
         else:
-            if not_improved_epochs > 20:
-                logging.info("Model has not improved for the last 20 epochs, stopping training")
-                # break
+            if not_improved_epochs > 10:
+                logging.info("Model has not improved for the last 10 epochs, stopping training")
+                break
             not_improved_epochs += 1
 
         if cfg.training.multi_gpu == True:

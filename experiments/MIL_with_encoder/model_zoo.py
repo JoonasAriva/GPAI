@@ -1,4 +1,5 @@
 import einops
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,6 +23,20 @@ class MyGroupNorm(nn.Module):
         return x
 
 
+class GhostBatchNorm2d(nn.Module):
+    def __init__(self, num_channels):
+        super().__init__()
+        self.nano_bs = 16
+        # self.register_buffer("nano_bs", torch.Tensor([self.nano_bs]))
+        self.bn = nn.BatchNorm2d(num_channels)
+
+    def forward(self, X):
+        chunks = X.chunk(int(np.ceil(X.shape[0] / self.nano_bs)), 0)
+        res = [self.bn(x_) for x_ in chunks]
+
+        return torch.cat(res, dim=0)
+
+
 class AttentionHeadV3(nn.Module):
     def __init__(self, L, D, K):
         super(AttentionHeadV3, self).__init__()
@@ -38,7 +53,7 @@ class AttentionHeadV3(nn.Module):
 
 class ResNetAttentionV3(nn.Module):
 
-    def __init__(self, neighbour_range=0, num_attention_heads=1, instnorm=False, resnet_type="18"):
+    def __init__(self, neighbour_range=0, num_attention_heads=1, instnorm=False, ghostnorm=False, resnet_type="18"):
         super().__init__()
         self.neighbour_range = neighbour_range
         self.num_attention_heads = num_attention_heads
@@ -57,8 +72,17 @@ class ResNetAttentionV3(nn.Module):
 
         self.classifier = nn.Sequential(nn.Linear(self.L * self.K, 1))
         self.sig = nn.Sigmoid()
+        if ghostnorm:
+            if resnet_type == "18":
+                model = resnet.ResNet(resnet.BasicBlock, [2, 2, 2, 2], norm_layer=GhostBatchNorm2d)
+                sd = resnet18(weights=ResNet18_Weights.DEFAULT).state_dict()
+            elif resnet_type == "34":
+                model = resnet.ResNet(resnet.BasicBlock, [3, 4, 6, 3], norm_layer=GhostBatchNorm2d)
+                sd = resnet34(weights=ResNet34_Weights.DEFAULT).state_dict()
 
-        if self.instnorm:
+            model.load_state_dict(sd, strict=False)
+
+        elif instnorm:
             # load the resnet with instance norm instead of batch norm
 
             if resnet_type == "18":
@@ -776,7 +800,7 @@ class TransMIL(nn.Module):
 
 class ResNetDepth(nn.Module):
 
-    def __init__(self, instnorm=False, resnet_type="18"):
+    def __init__(self, instnorm=False, ghostnorm: bool = False, resnet_type="18"):
         super().__init__()
         self.instnorm = instnorm
 
@@ -788,7 +812,18 @@ class ResNetDepth(nn.Module):
         self.adaptive_pooling = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)))
         self.classifier = nn.Sequential(nn.Linear(self.L * self.K, 1))
 
-        if self.instnorm:
+        if ghostnorm:
+            print("Using GhostNorm!")
+            if resnet_type == "18":
+                model = resnet.ResNet(resnet.BasicBlock, [2, 2, 2, 2], norm_layer=GhostBatchNorm2d)
+                sd = resnet18(weights=ResNet18_Weights.DEFAULT).state_dict()
+            elif resnet_type == "34":
+                model = resnet.ResNet(resnet.BasicBlock, [3, 4, 6, 3], norm_layer=GhostBatchNorm2d)
+                sd = resnet34(weights=ResNet34_Weights.DEFAULT).state_dict()
+
+            model.load_state_dict(sd, strict=False)
+
+        elif self.instnorm:
             # load the resnet with instance norm instead of batch norm
 
             if resnet_type == "18":
@@ -1172,17 +1207,18 @@ class TwoStageCompassV4(ResNetDepth):  # added attention head
 
 
 class TwoStageCompassV5(ResNetDepth):  # adding inverted sigmoid for non rel stack
-    def __init__(self, instnorm=False, fixed_compass=False, resnet_type="18"):
-        super().__init__(instnorm, resnet_type)
+    def __init__(self, instnorm=False, ghostnorm: bool = False, fixed_compass=False, resnet_type="18", range_0=-1,
+                 range_1=1):
+        super().__init__(instnorm, ghostnorm, resnet_type)
 
         self.tumor_classifier = nn.Linear(512, 1)
         self.tumor_attention_head = AttentionHeadV3(512, 128, 1)
         self.relevancy_classifier = nn.Linear(512, 1)
         # self.depth_range = nn.Parameter(torch.Tensor([-0.5, 0.2]))
-        self.depth_range = nn.Parameter(torch.Tensor([-0.35, 0.35]))
+        self.depth_range = nn.Parameter(torch.Tensor([range_0, range_1]))
         self.sigmoid = nn.Sigmoid()
 
-        self.scale = 20
+        self.scale = 0  # was 20
         self.fixed_compass = fixed_compass
 
     def forward(self, x, scan_end, depth_scores=None, cam=False):
@@ -1221,14 +1257,15 @@ class TwoStageCompassV5(ResNetDepth):  # adding inverted sigmoid for non rel sta
             # Pass the mean feature vectors to classifiers
 
             tumor_score = self.tumor_classifier(mean_in_range)
+            # other_score = self.tumor_classifier(mean_out_of_range)
             prediction = self.sigmoid(tumor_score)
             Y_hat = torch.ge(prediction, 0.5).float()
 
             out_of_range_relevancy_scores = self.relevancy_classifier(mean_out_of_range)
             in_range_relevancy_scores = self.relevancy_classifier(mean_in_range)
 
-            return tumor_score, Y_hat, out_of_range_relevancy_scores, in_range_relevancy_scores  # , self.tumor_classifier(
-            # H), self.relevancy_classifier(H)
+            return tumor_score, Y_hat, out_of_range_relevancy_scores, in_range_relevancy_scores, self.tumor_classifier(
+                H), self.relevancy_classifier(H)
 
         else:
             out = dict()
@@ -1246,7 +1283,7 @@ class TwoStageCompassV6(ResNetDepth):  # adding adversary cls head, removed tumo
         # self.tumor_attention_head = AttentionHeadV3(512, 128, 1)
         self.relevancy_classifier = nn.Linear(512, 1)
         # self.depth_range = nn.Parameter(torch.Tensor([-0.5, 0.2]))
-        self.depth_range = nn.Parameter(torch.Tensor([-0.35, 0.35]))
+        self.depth_range = nn.Parameter(torch.Tensor([-1, 1]))
         self.adversary_classifier = nn.Linear(512, 1)
         self.sigmoid = nn.Sigmoid()
 
