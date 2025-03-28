@@ -10,6 +10,7 @@ import torchio as tio
 from omegaconf import DictConfig
 from torch.utils.data.distributed import DistributedSampler
 
+from DANN import DANN
 from compass_trainer import TrainerCompass
 from compass_two_stage_adversary import TrainerCompassTwoStageAdv
 from compass_two_stage_trainer import TwoStageCompassLoss, TrainerCompassTwoStage
@@ -167,6 +168,8 @@ def pick_model(cfg: DictConfig):
         model = SWINCompass()
     elif cfg.model.name == 'swinV1':
         model = SWINClassifier()
+    elif cfg.model.name == 'DANN':
+        model = DANN(instnorm=cfg.model.inst_norm, ghostnorm=cfg.model.ghostnorm)
     return model
 
 

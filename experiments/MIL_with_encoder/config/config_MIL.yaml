@@ -1,0 +1,45 @@
+hydra:
+  run:
+    dir: results/${experiment}/${hydra.job.name}/${model.name}/${data.dataloader}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+
+experiment: MIL
+
+training:
+  epochs: 60
+  learning_rate: 1e-4
+  weight_decay: 5e-4
+  weight_update_freq: 1
+  seed: 1
+  multi_gpu: True
+
+
+model:
+  classes: 1
+  name: 'DANN'
+  model_type: '2D'
+  pretrained_imagenet: True
+  neighbour_range: 0
+  num_heads: 1
+  inst_norm: False
+  ghostnorm: True
+  pretrained: False
+  nr_of_blocks: 2
+  relevancy_head: True
+  progressive_sigmoid_scaling: True
+
+
+data:
+  batch_size: 1
+  take_every_nth_slice: 3
+  data_augmentations: True
+  plane: axial
+  dataloader: kidney_real
+  crop_size: 302
+  as_rgb: True
+  roll_slices: True
+  important_slices_only: False
+  no_lungs: False
+  patchify: False
+  slice_level_supervision: 0
+  random_experiment: False
+check: False

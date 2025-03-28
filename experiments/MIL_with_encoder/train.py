@@ -53,7 +53,7 @@ def reduce_results_dict(results):
     return new_results
 
 
-@hydra.main(config_path="config", config_name="config", version_base='1.1')
+@hydra.main(config_path="config", config_name="config_MIL", version_base='1.1')
 def main(cfg: DictConfig):
     if cfg.training.multi_gpu:
         init_process_group(backend="nccl")
@@ -78,7 +78,8 @@ def main(cfg: DictConfig):
 
     train_loader, test_loader = prepare_dataloader(cfg)
 
-    steps_in_epoch = 1250 // n_gpus  # before pärnu it was 500
+    steps_in_epoch = 1250  # with pärnu and kirc and kits its 1250, if just TUH, its 480
+    steps_in_epoch = steps_in_epoch // n_gpus
     if cfg.data.dataloader == 'kidney_pasted':
         steps_in_epoch = 478 // n_gpus
 
@@ -172,7 +173,7 @@ def main(cfg: DictConfig):
         train_results = {k + '_train': v for k, v in train_results.items()}
         test_results = {k + '_test': v for k, v in test_results.items()}
 
-        test_loss = test_results["loss_test"]
+        test_loss = test_results["class_loss_test"]
 
         epoch_results.update(train_results)
         epoch_results.update(test_results)
@@ -188,14 +189,14 @@ def main(cfg: DictConfig):
         if test_loss < best_loss:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), str(dir_checkpoint / 'best_model.pth'))
-            logging.info(f"Best new model at epoch {epoch} (lowest test loss: {test_loss})!")
+            logging.info(f"Best new model at epoch {epoch} (lowest test cls loss: {test_loss})!")
 
             best_loss = test_loss
             best_epoch = epoch
             not_improved_epochs = 0
 
         else:
-            if not_improved_epochs > 10:
+            if not_improved_epochs > 15:
                 logging.info("Model has not improved for the last 10 epochs, stopping training")
                 break
             not_improved_epochs += 1

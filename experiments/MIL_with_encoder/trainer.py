@@ -13,6 +13,9 @@ from tqdm import tqdm
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
 from misc_utils import get_percentage_of_scans_from_dataframe
+from data.data_utils import get_source_label, map_source_label
+
+DANN_loss = nn.CrossEntropyLoss().cuda()
 
 
 def calculate_classification_error(Y, Y_hat):
@@ -37,6 +40,10 @@ class Trainer:
         self.important_slices_only = cfg.data.important_slices_only
         self.update_freq = cfg.training.weight_update_freq
         self.slice_level_supervision = cfg.data.slice_level_supervision
+        if cfg.model.name == "DANN":
+            self.dann = True
+        else:
+            self.dann = False
         if cfg.data.no_lungs:
             path = '/scratch/project_465001111/ct_data/kidney/slice_statistics.csv'
             self.statistics = pd.read_csv(path)
@@ -64,17 +71,18 @@ class Trainer:
         epoch_loss = 0.
         class_loss = 0.
         epoch_error = 0.
+        domain_loss = 0.
         step = 0
         nr_of_batches = len(data_loader)
 
         tepoch = tqdm(data_loader, unit="batch", ascii=True,
                       total=self.steps_in_epoch if self.steps_in_epoch > 0 and train else len(data_loader))
 
-        if train:
-            model.train()
-        else:
-            model.eval()
-            # model.disable_dropout()
+        # if train:
+        #     model.train()
+        # else:
+        #     model.eval()
+        model.train()
 
         scaler = torch.cuda.amp.GradScaler()
         self.optimizer.zero_grad(set_to_none=True)
@@ -83,6 +91,8 @@ class Trainer:
         backprop_times = []
         outputs = []
         targets = []
+        domain_predictions = []
+        target_sources = []
 
         attention_scores = dict()
         attention_scores["all_scans"] = [[], []]  # first is for all label acc, second is tumor specific
@@ -110,18 +120,29 @@ class Trainer:
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
                 out = model.forward(data, scan_end=meta[3])
+                forward_time = time.time() - time_forward
+                forward_times.append(forward_time)
 
                 Y_hat = out["predictions"]
                 Y_prob = out["scores"]
 
-                forward_time = time.time() - time_forward
-                forward_times.append(forward_time)
-
                 loss = self.loss_function(Y_prob, bag_label.float())
 
-                total_loss = loss
+                if self.dann:
+                    domain_pred = out['domain_pred']
+                    path = meta[4][0]
+                    source_label = get_source_label(path)
+                    int_label = map_source_label(source_label).type(torch.LongTensor)
+                    dann_loss = DANN_loss(domain_pred, int_label.cuda())
+                    total_loss = loss + 0.1 * dann_loss
+                    domain_loss += dann_loss.item()
+                else:
+                    total_loss = loss
 
                 total_loss /= self.update_freq
+
+                domain_predictions.append(torch.argmax(domain_pred).item())
+                target_sources.append(int_label)
 
                 outputs.append(Y_hat.cpu())
                 targets.append(bag_label.cpu())
@@ -165,18 +186,22 @@ class Trainer:
         epoch_loss /= nr_of_batches
         epoch_error /= nr_of_batches
         class_loss /= nr_of_batches
+        domain_loss /= nr_of_batches
 
         outputs = np.concatenate(outputs)
         targets = np.concatenate(targets)
 
         f1 = f1_score(targets, outputs, average='macro')
+        target_sources = np.concatenate(target_sources)
+
+        domain_f1 = f1_score(target_sources, domain_predictions, average='macro')
 
         print("data speed: ", round(np.mean(data_times), 3), "forward speed ", round(np.mean(forward_times), 3),
               "backprop speed: ", round(np.mean(backprop_times), 3))
 
         print(
-            '{}: loss: {:.4f}, enc error: {:.4f}, f1 macro score: {:.4f}'.format(
-                "Train" if train else "Validation", epoch_loss, epoch_error, f1))
+            '{}: loss: {:.4f}, enc error: {:.4f}, f1 macro score: {:.4f} domain f1 score: {:.4f}'.format(
+                "Train" if train else "Validation", epoch_loss, epoch_error, f1, domain_f1))
         print(
             f"Main classification loss: {round(class_loss, 3)}")
 
@@ -187,5 +212,7 @@ class Trainer:
         results["loss"] = epoch_loss
         results["error"] = epoch_error
         results["f1_score"] = f1
+        results["domain_loss"] = domain_loss
+        results["domain_f1_score"] = domain_f1
 
         return results

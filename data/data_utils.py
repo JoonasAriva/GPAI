@@ -257,6 +257,25 @@ def get_kidney_datasets(type: str, no_lungs: bool = False):
     return all_controls, all_tumors
 
 
+def get_source_label(path):
+    if "tuh_test" in path or "tuh_train" in path:
+        data_class = "TUH DATA"
+    elif "parnu" in path:
+        data_class = "PÄRNU"
+    elif "kits" in path:
+        data_class = "KITS"
+    elif "TCGA" in path:
+        data_class = "KIRC"
+    return data_class
+
+
+def map_source_label(source_label):
+    classes = ["TUH DATA", "PÄRNU", "KITS", "KIRC"]
+    label_to_index = {label: idx for idx, label in enumerate(classes)}
+    int_label = torch.Tensor([label_to_index[source_label]])
+    return int_label
+
+
 def get_pasted_dateset():
     base_path = '/project/project_465001111/ct_data/'
     tuh_train_data_path = base_path + 'kidney/tuh_train/'

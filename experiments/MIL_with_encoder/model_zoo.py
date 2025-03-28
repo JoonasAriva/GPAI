@@ -8,9 +8,7 @@ from torch import Tensor as T
 from torchvision.models import resnet
 from torchvision.models import resnet18, ResNet18_Weights, resnet34, ResNet34_Weights
 
-
 # from experiments.MIL_with_encoder.models import Attention
-
 
 class MyGroupNorm(nn.Module):
     def __init__(self, num_channels):
@@ -26,7 +24,7 @@ class MyGroupNorm(nn.Module):
 class GhostBatchNorm2d(nn.Module):
     def __init__(self, num_channels):
         super().__init__()
-        self.nano_bs = 16
+        self.nano_bs = 32
         # self.register_buffer("nano_bs", torch.Tensor([self.nano_bs]))
         self.bn = nn.BatchNorm2d(num_channels)
 
@@ -1264,8 +1262,8 @@ class TwoStageCompassV5(ResNetDepth):  # adding inverted sigmoid for non rel sta
             out_of_range_relevancy_scores = self.relevancy_classifier(mean_out_of_range)
             in_range_relevancy_scores = self.relevancy_classifier(mean_in_range)
 
-            return tumor_score, Y_hat, out_of_range_relevancy_scores, in_range_relevancy_scores, self.tumor_classifier(
-                H), self.relevancy_classifier(H)
+            return tumor_score, Y_hat, out_of_range_relevancy_scores, in_range_relevancy_scores  # , self.tumor_classifier(
+            # H), self.relevancy_classifier(H)
 
         else:
             out = dict()
