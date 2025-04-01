@@ -133,8 +133,11 @@ class Trainer:
                     path = meta[4][0]
                     source_label = get_source_label(path)
                     int_label = map_source_label(source_label).type(torch.LongTensor)
-                    dann_loss = DANN_loss(domain_pred, int_label.cuda())
-                    total_loss = loss + 0.1 * dann_loss
+                    if int_label.item() == 0:  # remove TUH data from domain head training
+                        dann_loss = torch.Tensor([0]).cuda()
+                    else:
+                        dann_loss = DANN_loss(domain_pred, int_label.cuda())
+                    total_loss = loss + 0.5 * dann_loss
                     domain_loss += dann_loss.item()
                 else:
                     total_loss = loss
@@ -193,6 +196,11 @@ class Trainer:
 
         f1 = f1_score(targets, outputs, average='macro')
         target_sources = np.concatenate(target_sources)
+        domain_predictions = np.array(domain_predictions)
+        # print("domain preds:", domain_predictions, domain_predictions.shape)
+        # print("trgt sources:", target_sources, target_sources.shape)
+        domain_predictions = domain_predictions[target_sources != 0]
+        target_sources = target_sources[target_sources != 0]
 
         domain_f1 = f1_score(target_sources, domain_predictions, average='macro')
 

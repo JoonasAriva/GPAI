@@ -263,14 +263,14 @@ def get_source_label(path):
     elif "parnu" in path:
         data_class = "PÄRNU"
     elif "kits" in path:
-        data_class = "KITS"
+        data_class = "KITS+KIRC"
     elif "TCGA" in path:
-        data_class = "KIRC"
+        data_class = "KITS+KIRC"
     return data_class
 
 
 def map_source_label(source_label):
-    classes = ["TUH DATA", "PÄRNU", "KITS", "KIRC"]
+    classes = ["TUH DATA", "PÄRNU", "KITS+KIRC"]
     label_to_index = {label: idx for idx, label in enumerate(classes)}
     int_label = torch.Tensor([label_to_index[source_label]])
     return int_label
