@@ -225,9 +225,9 @@ def get_kidney_datasets(type: str, no_lungs: bool = False):
     # base_path = '/gpfs/space/projects/BetterMedicine/joonas/'  # hpc
 
     if no_lungs:
-        base_path = '/scratch/project_465001111/ct_data/'
+        base_path = '/scratch/project_465001979/ct_data/'
     else:
-        base_path = '/project/project_465001111/ct_data/'  # lumi
+        base_path = '/project/project_465001979/ct_data/'  # lumi
 
     tuh_train_data_path = base_path + 'kidney/tuh_train/'
     tuh_test_data_path = base_path + 'kidney/tuh_test/'
@@ -237,10 +237,9 @@ def get_kidney_datasets(type: str, no_lungs: bool = False):
     all_controls = []
     all_tumors = []
     # tuh
-    for data_path in [tuh_train_data_path, tuh_test_data_path, parnu_data_path]:
+    for data_path in [tuh_train_data_path, tuh_test_data_path]:  # , parnu_data_path]:
         control_path = data_path + 'controls/images/' + type + '/*nii.gz'
         tumor_path = data_path + 'cases/images/' + type + '/*nii.gz'
-
         if "parnu" in control_path:
             control_path = control_path.replace("/project/", "/scratch/")
             tumor_path = tumor_path.replace("/project/", "/scratch/")
@@ -251,8 +250,8 @@ def get_kidney_datasets(type: str, no_lungs: bool = False):
         all_tumors.extend(tumor)
 
     # # kits dataset + kirc dataset
-    tumor = glob.glob(other_datasets_path + '/imagesTr/' + type + '/*nii.gz')
-    all_tumors.extend(tumor)
+    # tumor = glob.glob(other_datasets_path + '/imagesTr/' + type + '/*nii.gz')
+    # all_tumors.extend(tumor)
 
     return all_controls, all_tumors
 
@@ -263,24 +262,24 @@ def get_source_label(path):
     elif "parnu" in path:
         data_class = "PÄRNU"
     elif "kits" in path:
-        data_class = "KITS+KIRC"
+        data_class = "KITS"
     elif "TCGA" in path:
-        data_class = "KITS+KIRC"
+        data_class = "KIRC"
     return data_class
 
 
 def map_source_label(source_label):
-    classes = ["TUH DATA", "PÄRNU", "KITS+KIRC"]
+    classes = ["TUH DATA", "PÄRNU", "KITS", "KIRC"]
     label_to_index = {label: idx for idx, label in enumerate(classes)}
     int_label = torch.Tensor([label_to_index[source_label]])
     return int_label
 
 
 def get_pasted_dateset():
-    base_path = '/project/project_465001111/ct_data/'
+    base_path = '/project/project_465001979/ct_data/'
     tuh_train_data_path = base_path + 'kidney/tuh_train/'
     tuh_test_data_path = base_path + 'kidney/tuh_test/'
-    pasted_tumors_path = '/scratch/project_465001111/ct_data/kidney/pasted_tumors/*.nii.gz'
+    pasted_tumors_path = '/scratch/project_465001979/ct_data/pasted_tumors_small/*.nii.gz'
 
     all_controls = []
 
@@ -293,6 +292,34 @@ def get_pasted_dateset():
     all_tumors = glob.glob(pasted_tumors_path)
 
     return all_controls, all_tumors
+
+
+def get_pasted_small_dateset():
+    base_path = '/project/project_465001979/ct_data/'
+    tuh_train_data_path = base_path + 'kidney/tuh_train/'
+    tuh_test_data_path = base_path + 'kidney/tuh_test/'
+    pasted_tumors_path = '/scratch/project_465001979/ct_data/pasted_tumors_small/*.nii.gz'
+    pasted_tumors_path = '/scratch/project_465001979/ct_data/pasted_tumors_small/tuh_control_2.25.196698621768415934049516370456628718614*'
+    all_controls = []
+
+    for data_path in [tuh_train_data_path, tuh_test_data_path]:
+        control_path = data_path + 'controls/images/train/*nii.gz'
+
+        control = glob.glob(control_path)
+        all_controls.extend(control)
+
+    all_tumors = glob.glob(pasted_tumors_path)
+
+    filter_list = []
+    for path in all_tumors:
+
+        id = path.replace("_0000.nii.gz","").split("_")[-2]
+        if id not in filter_list:
+            filter_list.append(id)
+
+    filtered_controls = [s for s in all_controls if any(sub in s for sub in filter_list)]
+
+    return filtered_controls, all_tumors
 
 
 import time

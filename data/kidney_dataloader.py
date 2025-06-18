@@ -12,7 +12,8 @@ from sklearn.model_selection import train_test_split
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
 sys.path.append('/users/arivajoo/GPAI/data')
-from data_utils import get_kidney_datasets, downsample_scan, normalize_scan, set_orientation_nib, get_pasted_dateset
+from data_utils import get_kidney_datasets, downsample_scan, normalize_scan, set_orientation_nib, \
+    get_pasted_small_dateset
 
 
 def make_single_sphere_coords():
@@ -65,14 +66,16 @@ class KidneyDataloader(torch.utils.data.Dataset):
         if roll_slices:
             center_crop = center_crop
         self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))  # 500
-        #self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop - 2), method="end", constant_values=0)
+        # self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop - 2), method="end", constant_values=0)
         self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop), method="end", constant_values=0)
         self.resizer = Resize(spatial_size=512, size_mode="longest")
+
+
         print("PLANE: ", plane)
         print("CROP SIZE: ", center_crop)
 
         if pasted_experiment and type == 'train':
-            control, tumor = get_pasted_dateset()
+            control, tumor = get_pasted_small_dateset()
         else:
             control, tumor = get_kidney_datasets(type, no_lungs=no_lungs)
 
@@ -233,7 +236,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
             x = self.padder_z(x).as_tensor()
             return x, y, (case_id, nth_slice, spacings, height_before_padding, path)
         else:
-            #x = self.padder_z(x).as_tensor()
+            # x = self.padder_z(x).as_tensor()
             x = torch.squeeze(x)
             return x, y, (case_id, nth_slice, spacings, height_before_padding, path)
 

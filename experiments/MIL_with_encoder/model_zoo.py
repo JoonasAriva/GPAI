@@ -8,12 +8,14 @@ from torch import Tensor as T
 from torchvision.models import resnet
 from torchvision.models import resnet18, ResNet18_Weights, resnet34, ResNet34_Weights
 
+
 # from experiments.MIL_with_encoder.models import Attention
 
 class MyGroupNorm(nn.Module):
     def __init__(self, num_channels):
         super(MyGroupNorm, self).__init__()
-        self.norm = nn.GroupNorm(num_groups=num_channels, num_channels=num_channels,
+        num_groups = max(1, num_channels // 8)
+        self.norm = nn.GroupNorm(num_groups=num_groups, num_channels=num_channels,
                                  eps=1e-5, affine=True)
 
     def forward(self, x):
@@ -24,7 +26,7 @@ class MyGroupNorm(nn.Module):
 class GhostBatchNorm2d(nn.Module):
     def __init__(self, num_channels):
         super().__init__()
-        self.nano_bs = 32
+        self.nano_bs = 20
         # self.register_buffer("nano_bs", torch.Tensor([self.nano_bs]))
         self.bn = nn.BatchNorm2d(num_channels)
 
@@ -104,12 +106,12 @@ class ResNetAttentionV3(nn.Module):
         for attention_head in self.attention_heads:
             attention_head.eval()
 
-    def forward(self, x, scan_end, cam=False):
+    def forward(self, x, scan_end, cam=False, **kwargs):
         out = dict()
-        H = self.backbone(x)
+        H = self.backbone(x[:scan_end])
         H = self.adaptive_pooling(H)
         H = H.view(-1, 512 * 1 * 1)
-        H = H[:scan_end]
+        # H = H[:scan_end]
         if self.neighbour_range != 0:
             combinedH = H.view(-1)
             combinedH = F.pad(combinedH, (self.L * self.neighbour_range, self.L * self.neighbour_range), "constant",
@@ -852,6 +854,36 @@ class ResNetDepth(nn.Module):
         depth_scores = self.classifier(H)
 
         return depth_scores
+
+
+class DepthTumor(ResNetDepth):
+    def __init__(self, instnorm=False, ghostnorm=False, resnet_type="18"):
+        super().__init__(instnorm=instnorm, ghostnorm=ghostnorm, resnet_type=resnet_type)
+
+        self.tmr_classifier = nn.Linear(512, 1)
+        self.attention_head = AttentionHeadV3(512, 128, 1)
+        self.sig = nn.Sigmoid()
+
+    def forward(self, x, scan_end, cam=False):
+        out = dict()
+
+        H = self.backbone(x[:scan_end])
+        H = self.adaptive_pooling(H)
+        H = H.view(-1, 512 * 1 * 1)
+        unnorm_A = self.attention_head(H)
+        A = F.softmax(unnorm_A, dim=1)
+        M = torch.mm(A.T, H)
+        depth_scores = self.classifier(H)
+        tmr_scores = self.tmr_classifier(M)
+
+        Y_hat = self.sig(tmr_scores)
+        Y_hat = torch.ge(Y_hat, 0.5).float()
+
+        out['predictions'] = Y_hat
+        out['scores'] = tmr_scores
+        out['attention_weights'] = A
+        out['depth_scores'] = depth_scores
+        return out
 
 
 class TransDepth(nn.Module):

@@ -15,16 +15,15 @@ training:
 
 model:
   classes: 1
-  name: 'DANN'
+  name: 'resnetrel'
   model_type: '2D'
   pretrained_imagenet: True
   neighbour_range: 0
   num_heads: 1
-  inst_norm: False
-  ghostnorm: True
+  inst_norm: True
+  ghostnorm: False
   pretrained: False
-  nr_of_blocks: 2
-  relevancy_head: True
+  relevancy_head: False
   progressive_sigmoid_scaling: True
 
 

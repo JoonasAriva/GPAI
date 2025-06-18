@@ -14,7 +14,9 @@ sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
 from misc_utils import get_percentage_of_scans_from_dataframe
 from data.data_utils import get_source_label, map_source_label
+from depth_trainer import DepthLossV2
 
+DEPTH_loss = DepthLossV2(step=0.05).cuda()
 DANN_loss = nn.CrossEntropyLoss().cuda()
 
 
@@ -40,10 +42,16 @@ class Trainer:
         self.important_slices_only = cfg.data.important_slices_only
         self.update_freq = cfg.training.weight_update_freq
         self.slice_level_supervision = cfg.data.slice_level_supervision
+
         if cfg.model.name == "DANN":
             self.dann = True
         else:
             self.dann = False
+        if "depth" in cfg.model.name:
+            self.depth = True
+        else:
+            self.depth = False
+
         if cfg.data.no_lungs:
             path = '/scratch/project_465001111/ct_data/kidney/slice_statistics.csv'
             self.statistics = pd.read_csv(path)
@@ -72,6 +80,7 @@ class Trainer:
         class_loss = 0.
         epoch_error = 0.
         domain_loss = 0.
+        depth_loss = 0.
         step = 0
         nr_of_batches = len(data_loader)
 
@@ -119,7 +128,7 @@ class Trainer:
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
-                out = model.forward(data, scan_end=meta[3])
+                out = model.forward(data, label=bag_label, scan_end=meta[3])
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
@@ -133,19 +142,23 @@ class Trainer:
                     path = meta[4][0]
                     source_label = get_source_label(path)
                     int_label = map_source_label(source_label).type(torch.LongTensor)
-                    if int_label.item() == 0:  # remove TUH data from domain head training
-                        dann_loss = torch.Tensor([0]).cuda()
-                    else:
-                        dann_loss = DANN_loss(domain_pred, int_label.cuda())
+
+                    dann_loss = DANN_loss(domain_pred, int_label.cuda())
                     total_loss = loss + 0.5 * dann_loss
                     domain_loss += dann_loss.item()
+                    domain_predictions.append(torch.argmax(domain_pred).item())
+                    target_sources.append(int_label)
+
+                elif self.depth:
+                    depth_scores = out['depth_scores']
+                    d_loss = DEPTH_loss(depth_scores, z_spacing=meta[2][2],  # second 2 is for z spacing
+                                        nth_slice=meta[1])
+                    depth_loss += d_loss.item()
+                    total_loss = d_loss + loss
                 else:
                     total_loss = loss
 
                 total_loss /= self.update_freq
-
-                domain_predictions.append(torch.argmax(domain_pred).item())
-                target_sources.append(int_label)
 
                 outputs.append(Y_hat.cpu())
                 targets.append(bag_label.cpu())
@@ -190,26 +203,25 @@ class Trainer:
         epoch_error /= nr_of_batches
         class_loss /= nr_of_batches
         domain_loss /= nr_of_batches
+        depth_loss /= nr_of_batches
 
         outputs = np.concatenate(outputs)
         targets = np.concatenate(targets)
 
         f1 = f1_score(targets, outputs, average='macro')
-        target_sources = np.concatenate(target_sources)
-        domain_predictions = np.array(domain_predictions)
-        # print("domain preds:", domain_predictions, domain_predictions.shape)
-        # print("trgt sources:", target_sources, target_sources.shape)
-        domain_predictions = domain_predictions[target_sources != 0]
-        target_sources = target_sources[target_sources != 0]
 
-        domain_f1 = f1_score(target_sources, domain_predictions, average='macro')
+        if self.dann:
+            target_sources = np.concatenate(target_sources)
+            domain_predictions = np.array(domain_predictions)
+            domain_f1 = f1_score(target_sources, domain_predictions, average='macro')
+            results["domain_f1_score"] = domain_f1
 
         print("data speed: ", round(np.mean(data_times), 3), "forward speed ", round(np.mean(forward_times), 3),
               "backprop speed: ", round(np.mean(backprop_times), 3))
 
         print(
-            '{}: loss: {:.4f}, enc error: {:.4f}, f1 macro score: {:.4f} domain f1 score: {:.4f}'.format(
-                "Train" if train else "Validation", epoch_loss, epoch_error, f1, domain_f1))
+            '{}: loss: {:.4f}, enc error: {:.4f}, f1 macro score: {:.4f} '.format(
+                "Train" if train else "Validation", epoch_loss, epoch_error, f1))
         print(
             f"Main classification loss: {round(class_loss, 3)}")
 
@@ -221,6 +233,6 @@ class Trainer:
         results["error"] = epoch_error
         results["f1_score"] = f1
         results["domain_loss"] = domain_loss
-        results["domain_f1_score"] = domain_f1
+        results["depth_loss"] = depth_loss
 
         return results

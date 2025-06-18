@@ -23,13 +23,15 @@ from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerP
     ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention, \
     MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2, ResNetDepth, TransDepth, CompassModel, \
     CompassModelV2, TwoStageCompass, TwoStageCompassV2, TwoStageCompassV3, TwoStageCompassV4, TwoStageCompassV5, \
-    TwoStageCompassV6
+    TwoStageCompassV6, DepthTumor
 from swin_models import SWINCompass, SWINClassifier
+from rel_models import ResNetRel
 from trainer import Trainer
 from trainer_reg import TrainerReg, RegularizedAttentionLoss
 
 
 def prepare_dataloader(cfg: DictConfig):
+
     if "kidney" in cfg.data.dataloader:
         if "pasted" in cfg.data.dataloader:
             pasted_experiment = True
@@ -112,7 +114,8 @@ def prepare_dataloader(cfg: DictConfig):
 def pick_model(cfg: DictConfig):
     if cfg.model.name == 'resnet18V3':
         model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
-                                  num_attention_heads=cfg.model.num_heads, instnorm=True, resnet_type="18")
+                                  num_attention_heads=cfg.model.num_heads, instnorm=cfg.model.inst_norm,
+                                  ghostnorm=cfg.model.ghostnorm, resnet_type="18")
     elif cfg.model.name == 'resnet34V3':
         model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
                                   num_attention_heads=cfg.model.num_heads, instnorm=True, resnet_type="34")
@@ -170,6 +173,11 @@ def pick_model(cfg: DictConfig):
         model = SWINClassifier()
     elif cfg.model.name == 'DANN':
         model = DANN(instnorm=cfg.model.inst_norm, ghostnorm=cfg.model.ghostnorm)
+    elif cfg.model.name == 'depthtumor':
+        model = DepthTumor(instnorm=cfg.model.inst_norm, ghostnorm=cfg.model.ghostnorm)
+    elif cfg.model.name == 'resnetrel':
+        model = ResNetRel(instnorm=cfg.model.inst_norm, ghostnorm=cfg.model.ghostnorm)
+
     return model
 
 

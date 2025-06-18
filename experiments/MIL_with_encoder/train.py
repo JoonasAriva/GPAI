@@ -78,7 +78,7 @@ def main(cfg: DictConfig):
 
     train_loader, test_loader = prepare_dataloader(cfg)
 
-    steps_in_epoch = 1250  # with pärnu and kirc and kits its 1250, if just TUH, its 480
+    steps_in_epoch = 471  # with pärnu and kirc and kits its 1250, if just TUH, its 480
     steps_in_epoch = steps_in_epoch // n_gpus
     if cfg.data.dataloader == 'kidney_pasted':
         steps_in_epoch = 478 // n_gpus
@@ -173,10 +173,13 @@ def main(cfg: DictConfig):
         train_results = {k + '_train': v for k, v in train_results.items()}
         test_results = {k + '_test': v for k, v in test_results.items()}
 
-        test_loss = test_results["class_loss_test"]
-
         epoch_results.update(train_results)
         epoch_results.update(test_results)
+
+        if cfg.training.multi_gpu == True:
+            epoch_results = reduce_results_dict(epoch_results)
+
+        test_loss = epoch_results["class_loss_test"]
 
         # epoch_results = reduce_results_dict(epoch_results)
         # print_multi_gpu(epoch_results, local_rank)
@@ -201,15 +204,13 @@ def main(cfg: DictConfig):
                 break
             not_improved_epochs += 1
 
-        if cfg.training.multi_gpu == True:
-            epoch_results = reduce_results_dict(epoch_results)
-            if local_rank == 0:
-                logging.info("Logging results to wandb")
-                experiment.log(epoch_results)
+        if local_rank == 0:
+            logging.info("Logging results to wandb")
+            experiment.log(epoch_results)
 
-                torch.save(model.module.state_dict(), str(dir_checkpoint / 'current_model.pth'))
-                torch.save(optimizer.state_dict(), str(dir_checkpoint / 'current_optimizer.pth'))
-                torch.save(scheduler.state_dict(), str(dir_checkpoint / 'current_scheduler.pth'))
+            torch.save(model.module.state_dict(), str(dir_checkpoint / 'current_model.pth'))
+            torch.save(optimizer.state_dict(), str(dir_checkpoint / 'current_optimizer.pth'))
+            torch.save(scheduler.state_dict(), str(dir_checkpoint / 'current_scheduler.pth'))
 
     if local_rank == 0:
         torch.save(model.state_dict(), str(dir_checkpoint / 'last_model.pth'))
