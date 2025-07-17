@@ -13,7 +13,7 @@ from sklearn.model_selection import train_test_split
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
 sys.path.append('/users/arivajoo/GPAI/data')
 from data_utils import get_kidney_datasets, downsample_scan, normalize_scan, set_orientation_nib, \
-    get_pasted_small_dateset
+    get_pasted_small_dateset, normalize_scan_new, CompassFilter
 
 
 def make_single_sphere_coords():
@@ -47,7 +47,8 @@ class KidneyDataloader(torch.utils.data.Dataset):
                  sample_shifting: bool = False, plane: str = 'axial',
                  center_crop: int = 120, roll_slices=False, model_type="2D", generate_spheres: bool = False,
                  patchify: bool = False, patch_size: int = 128, no_lungs: bool = False,
-                 random_experiment: bool = False, pasted_experiment: bool = False):
+                 random_experiment: bool = False, pasted_experiment: bool = False, TUH_only: bool = False,
+                 compass_filtering: bool = False):
         super().__init__()
         self.roll_slices = roll_slices
         self.as_rgb = as_rgb
@@ -62,7 +63,11 @@ class KidneyDataloader(torch.utils.data.Dataset):
         self.patchify = patchify
         self.patch_size = patch_size
         self.no_lungs = no_lungs
-
+        self.compass_filtering = compass_filtering
+        if compass_filtering:
+            self.COMPASS = CompassFilter(
+                dataframe_path_train='/users/arivajoo/GPAI/experiments/MIL_with_encoder/train_compass_scores.csv',
+                dataframe_path_test='/users/arivajoo/GPAI/experiments/MIL_with_encoder/test_compass_scores.csv')
         if roll_slices:
             center_crop = center_crop
         self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))  # 500
@@ -70,14 +75,13 @@ class KidneyDataloader(torch.utils.data.Dataset):
         self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop), method="end", constant_values=0)
         self.resizer = Resize(spatial_size=512, size_mode="longest")
 
-
         print("PLANE: ", plane)
         print("CROP SIZE: ", center_crop)
 
         if pasted_experiment and type == 'train':
             control, tumor = get_pasted_small_dateset()
         else:
-            control, tumor = get_kidney_datasets(type, no_lungs=no_lungs)
+            control, tumor = get_kidney_datasets(type, no_lungs=no_lungs, TUH_only=TUH_only)
 
         control_labels = [[False]] * len(control)
         self.controls = len(control)
@@ -166,6 +170,15 @@ class KidneyDataloader(torch.utils.data.Dataset):
         x = np.squeeze(x)
         w, h, d = x.shape
 
+        if self.compass_filtering:
+            original_len = x.shape[-1]
+            low_index, high_index = self.COMPASS.compass_filter_indexes(case_id,
+                                                                        train=True if self.type == 'train' else False)
+            x = x[:, :, low_index:high_index]
+            after_len = x.shape[-1]
+            filter_effect = original_len - after_len
+        else:
+            filter_effect = 0
         x = np.clip(x, -1024, None)
         # x = remove_table_3d(x)
 
@@ -195,7 +208,7 @@ class KidneyDataloader(torch.utils.data.Dataset):
 
         if len(x.shape) == 3:  # might be case in 3d models
             x = np.expand_dims(x, 0)
-        x = normalize_scan(x, single_channel=not self.as_rgb, model_type=self.model_type, remove_bones=False)
+        x = normalize_scan_new(x)
 
         if w < 512 or h < 512:
             if w >= h:
@@ -234,11 +247,11 @@ class KidneyDataloader(torch.utils.data.Dataset):
         if not self.model_type == "3D":
 
             x = self.padder_z(x).as_tensor()
-            return x, y, (case_id, nth_slice, spacings, height_before_padding, path)
+            return x, y, (case_id, nth_slice, spacings, height_before_padding, path, filter_effect)
         else:
             # x = self.padder_z(x).as_tensor()
             x = torch.squeeze(x)
-            return x, y, (case_id, nth_slice, spacings, height_before_padding, path)
+            return x, y, (case_id, nth_slice, spacings, height_before_padding, path, filter_effect)
 
 
 class AbdomenAtlasLoader(torch.utils.data.Dataset):

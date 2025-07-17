@@ -143,7 +143,8 @@ class ResNetAttentionV3(nn.Module):
 
         out['predictions'] = Y_hat
         out['scores'] = Y_prob
-        out['attention_weights'] = unnorm_A
+        out['attention_weights'] = A
+        out['unnorm_A'] = unnorm_A
         return out  # Y_prob, Y_hat, unnorm_A
 
 
@@ -195,7 +196,7 @@ class SelfAttention(nn.Module):
 
 class ResNetSelfAttention(nn.Module):
 
-    def __init__(self, neighbour_range=0, num_attention_heads=1, instnorm=True, resnet_type="18"):
+    def __init__(self, neighbour_range=0, num_attention_heads=1, instnorm=True, resnet_type="34"):
         super().__init__()
         self.neighbour_range = neighbour_range
         self.num_attention_heads = num_attention_heads
@@ -209,6 +210,8 @@ class ResNetSelfAttention(nn.Module):
         self.adaptive_pooling = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)))
 
         self.classifier = nn.Sequential(nn.Linear(self.L * self.K, 1))
+        self.attention_heads = nn.ModuleList([
+            AttentionHeadV3(self.L, self.D, self.K) for i in range(self.num_attention_heads)])
         self.sig = nn.Sigmoid()
 
         if self.instnorm:
@@ -232,29 +235,44 @@ class ResNetSelfAttention(nn.Module):
         self.backbone = nn.Sequential(*modules)
 
         self.self_attention = SelfAttention(embed_dim=512, num_heads=1)
-        self.cls_token = nn.Parameter(torch.zeros(1, 512))
-        torch.nn.init.trunc_normal_(self.cls_token)
+        #self.cls_token = nn.Parameter(torch.zeros(1, 512))
+        #torch.nn.init.trunc_normal_(self.cls_token)
 
-    def forward(self, x, include_weights=False):
-
-        H = self.backbone(x)
+    def forward(self, x, scan_end,include_weights=False, **kwargs):
+        out = dict()
+        H = self.backbone(x[:scan_end])
         H = self.adaptive_pooling(H)
         H = H.view(-1, 512 * 1 * 1)
 
-        H = torch.concat((self.cls_token, H), dim=0)
+        #H = torch.concat((self.cls_token, H), dim=0)
 
-        H, weights = self.self_attention(H)
+        H2, weights = self.self_attention(H)
 
-        CLS = torch.unsqueeze(H[0, :], dim=0)
+        #CLS = torch.unsqueeze(H[0, :], dim=0)
 
-        Y_prob = self.classifier(CLS)
+        attention_maps = [head(H2) for head in self.attention_heads]
+        attention_maps = torch.cat(attention_maps, dim=1)
+
+        unnorm_A = torch.mean(attention_maps, dim=1)
+        unnorm_A = unnorm_A.view(1, -1)
+        A = F.softmax(unnorm_A, dim=1)
+        M = torch.mm(A, H)
+        # print("M", M.shape)
+        Y_prob = self.classifier(M)
+
+        Y_prob = self.classifier(M)
         Y_hat = self.sig(Y_prob)
         Y_hat = torch.ge(Y_hat, 0.5).float()
+
+        out['predictions'] = Y_hat
+        out['scores'] = Y_prob
+        out['attention_weights'] = A
+        out['unnorm_A'] = unnorm_A
 
         if include_weights:
             return Y_prob, Y_hat, weights
         else:
-            return Y_prob, Y_hat
+            return out
 
 
 class FFN(nn.Sequential):
@@ -800,8 +818,9 @@ class TransMIL(nn.Module):
 
 class ResNetDepth(nn.Module):
 
-    def __init__(self, instnorm=False, ghostnorm: bool = False, resnet_type="18"):
+    def __init__(self, instnorm=False, ghostnorm: bool = False, resnet_type="34"):
         super().__init__()
+        print("Resnet type: {}".format(resnet_type))
         self.instnorm = instnorm
 
         self.L = 512 * 1 * 1
@@ -864,7 +883,7 @@ class DepthTumor(ResNetDepth):
         self.attention_head = AttentionHeadV3(512, 128, 1)
         self.sig = nn.Sigmoid()
 
-    def forward(self, x, scan_end, cam=False):
+    def forward(self, x, scan_end, cam=False, **kwargs):
         out = dict()
 
         H = self.backbone(x[:scan_end])
@@ -881,7 +900,7 @@ class DepthTumor(ResNetDepth):
 
         out['predictions'] = Y_hat
         out['scores'] = tmr_scores
-        out['attention_weights'] = A
+        out['attention_weights'] = unnorm_A
         out['depth_scores'] = depth_scores
         return out
 

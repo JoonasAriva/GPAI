@@ -15,9 +15,12 @@ sys.path.append('/users/arivajoo/GPAI')
 from misc_utils import get_percentage_of_scans_from_dataframe
 from data.data_utils import get_source_label, map_source_label
 from depth_trainer import DepthLossV2
+from attention_loss import AttentionLoss
+from multi_gpu_utils import print_multi_gpu
 
 DEPTH_loss = DepthLossV2(step=0.05).cuda()
 DANN_loss = nn.CrossEntropyLoss().cuda()
+ATTENTION_loss = AttentionLoss(step=1).cuda()
 
 
 def calculate_classification_error(Y, Y_hat):
@@ -52,6 +55,11 @@ class Trainer:
         else:
             self.depth = False
 
+        if cfg.experiment == "Attention":
+            self.attention = True
+        else:
+            self.attention = False
+
         if cfg.data.no_lungs:
             path = '/scratch/project_465001111/ct_data/kidney/slice_statistics.csv'
             self.statistics = pd.read_csv(path)
@@ -73,25 +81,28 @@ class Trainer:
 
         return error
 
-    def run_one_epoch(self, model, data_loader, epoch: int, train: bool = True):
+    def run_one_epoch(self, model, data_loader, epoch: int, train: bool = True, local_rank=0):
 
         results = dict()
         epoch_loss = 0.
         class_loss = 0.
         epoch_error = 0.
         domain_loss = 0.
+        attn_loss = 0.
         depth_loss = 0.
         step = 0
         nr_of_batches = len(data_loader)
 
+        disable_tqdm = False if local_rank == 0 else True
         tepoch = tqdm(data_loader, unit="batch", ascii=True,
-                      total=self.steps_in_epoch if self.steps_in_epoch > 0 and train else len(data_loader))
+                      total=self.steps_in_epoch if self.steps_in_epoch > 0 and train else len(data_loader),
+                      disable=disable_tqdm)
 
-        # if train:
-        #     model.train()
-        # else:
-        #     model.eval()
-        model.train()
+        if train:
+            model.train()
+        else:
+            model.eval()
+        # model.train()
 
         scaler = torch.cuda.amp.GradScaler()
         self.optimizer.zero_grad(set_to_none=True)
@@ -118,7 +129,6 @@ class Trainer:
 
             tepoch.set_description(f"Epoch {epoch}")
             step += 1
-            gc.collect()
 
             data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))  # if training a swin model, disable this line
 
@@ -128,14 +138,17 @@ class Trainer:
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
-                out = model.forward(data, label=bag_label, scan_end=meta[3])
+                path = meta[4][0]
+                source_label = get_source_label(path)
+                out = model.forward(data, label=bag_label, scan_end=meta[3], source_label=source_label)
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
                 Y_hat = out["predictions"]
                 Y_prob = out["scores"]
 
-                loss = self.loss_function(Y_prob, bag_label.float())
+                cls_loss = self.loss_function(Y_prob, bag_label.float())
+                total_loss = cls_loss
 
                 if self.dann:
                     domain_pred = out['domain_pred']
@@ -144,24 +157,27 @@ class Trainer:
                     int_label = map_source_label(source_label).type(torch.LongTensor)
 
                     dann_loss = DANN_loss(domain_pred, int_label.cuda())
-                    total_loss = loss + 0.5 * dann_loss
+                    total_loss = cls_loss + 0.5 * dann_loss
                     domain_loss += dann_loss.item()
                     domain_predictions.append(torch.argmax(domain_pred).item())
                     target_sources.append(int_label)
 
-                elif self.depth:
+                if self.depth:
                     depth_scores = out['depth_scores']
                     d_loss = DEPTH_loss(depth_scores, z_spacing=meta[2][2],  # second 2 is for z spacing
                                         nth_slice=meta[1])
                     depth_loss += d_loss.item()
-                    total_loss = d_loss + loss
-                else:
-                    total_loss = loss
+                    total_loss = total_loss + d_loss
+                if self.attention:
+                    attention_scores = out['attention_weights'].flatten()
+                    attn_loss = ATTENTION_loss(attention_scores, z_spacing=meta[2][2],
+                                               nth_slice=meta[1]).item()
+                    total_loss = total_loss + attn_loss
 
                 total_loss /= self.update_freq
 
-                outputs.append(Y_hat.cpu())
-                targets.append(bag_label.cpu())
+                outputs.append(Y_hat.detach().cpu())
+                targets.append(bag_label.detach().cpu())
 
             if train:
                 time_backprop = time.time()
@@ -181,7 +197,7 @@ class Trainer:
             # torch.cuda.reset_peak_memory_stats()
 
             epoch_loss += total_loss.item() * self.update_freq
-            class_loss += loss.item()
+            class_loss += cls_loss.item()
 
             error = calculate_classification_error(bag_label, Y_hat)
 
@@ -197,6 +213,8 @@ class Trainer:
 
             time_data = time.time()
 
+        gc.collect()
+        torch.cuda.empty_cache()
         # calculate loss and error for epoch
 
         epoch_loss /= nr_of_batches
@@ -204,6 +222,7 @@ class Trainer:
         class_loss /= nr_of_batches
         domain_loss /= nr_of_batches
         depth_loss /= nr_of_batches
+        attn_loss /= nr_of_batches
 
         outputs = np.concatenate(outputs)
         targets = np.concatenate(targets)
@@ -216,14 +235,18 @@ class Trainer:
             domain_f1 = f1_score(target_sources, domain_predictions, average='macro')
             results["domain_f1_score"] = domain_f1
 
-        print("data speed: ", round(np.mean(data_times), 3), "forward speed ", round(np.mean(forward_times), 3),
-              "backprop speed: ", round(np.mean(backprop_times), 3))
+        print_multi_gpu(
+            f"data speed: {round(np.mean(data_times), 3)}, forward speed ,{round(np.mean(forward_times), 3)},backprop speed: , {round(np.mean(backprop_times), 3)}",
+            local_rank)
 
-        print(
+        print_multi_gpu(
             '{}: loss: {:.4f}, enc error: {:.4f}, f1 macro score: {:.4f} '.format(
-                "Train" if train else "Validation", epoch_loss, epoch_error, f1))
-        print(
-            f"Main classification loss: {round(class_loss, 3)}")
+                "Train" if train else "Validation", epoch_loss, epoch_error, f1), local_rank)
+        print_multi_gpu(
+            f"Main classification loss: {round(class_loss, 3)}", local_rank)
+
+        if self.attention:
+            print_multi_gpu(f"Attention loss: {round(attn_loss, 3)}", local_rank)
 
         # print(f"Attention mAP for kidney region all scans: {round(np.mean(attention_scores['all_scans'][0]), 3)}")
 
@@ -234,5 +257,6 @@ class Trainer:
         results["f1_score"] = f1
         results["domain_loss"] = domain_loss
         results["depth_loss"] = depth_loss
+        results["attention_loss"] = attn_loss
 
         return results

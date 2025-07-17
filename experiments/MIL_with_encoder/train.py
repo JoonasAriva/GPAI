@@ -11,8 +11,10 @@ import torch
 import torch.optim as optim
 import wandb
 from omegaconf import OmegaConf, DictConfig
-from torch.distributed import init_process_group, all_reduce, ReduceOp
+from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
+
+from multi_gpu_utils import print_multi_gpu, log_multi_gpu, reduce_results_dict
 
 # from torchinfo import summary
 
@@ -31,26 +33,6 @@ np.seterr(divide='ignore', invalid='ignore')
 os.environ["WANDB__SERVICE_WAIT"] = "300"
 
 torch.backends.cudnn.benchmark = True
-
-
-def print_multi_gpu(str, local_rank):
-    if local_rank == 0:
-        print(str)
-
-
-def log_multi_gpu(str, local_rank):
-    if local_rank == 0:
-        logging.info(str)
-
-
-def reduce_results_dict(results):
-    new_results = dict()
-    for k, v in results.items():
-        metric = torch.Tensor([v]).cuda()
-        all_reduce(metric, op=ReduceOp.SUM)
-        avg_metric = metric.item() / torch.cuda.device_count()
-        new_results[k] = avg_metric
-    return new_results
 
 
 @hydra.main(config_path="config", config_name="config_MIL", version_base='1.1')
@@ -103,9 +85,10 @@ def main(cfg: DictConfig):
 
     if cfg.model.pretrained:
         sd = torch.load(
-            '/users/arivajoo/results/swin/train/swincompassV1/kidney_real/2025-01-29/15-23-40/checkpoints/best_model.pth')
-        model.load_state_dict(state_dict=sd, strict=False)
-        logging.info('Loaded compass pretrained model')
+            '/users/arivajoo/results/depth/train/resnetdepth/kidney_real/2025-07-14/11-17-49/checkpoints/best_model.pth',map_location='cuda:0')
+        new_sd = {key.replace("module.", ""): value for key, value in sd.items()}
+        model.load_state_dict(state_dict=new_sd, strict=False)
+        logging.info('Loaded depth pretrained model')
 
     # if you need to continue training
     resume_run = False
@@ -165,10 +148,10 @@ def main(cfg: DictConfig):
 
     for epoch in range(1, cfg.training.epochs + 1):
         epoch_results = dict()
-        train_results = trainer.run_one_epoch(model, train_loader, epoch, train=True)
+        train_results = trainer.run_one_epoch(model, train_loader, epoch, train=True, local_rank=local_rank)
         epoch_results["learning_rate"] = scheduler.get_last_lr()[0]
 
-        test_results = trainer.run_one_epoch(model, test_loader, epoch, train=False)
+        test_results = trainer.run_one_epoch(model, test_loader, epoch, train=False, local_rank=local_rank)
 
         train_results = {k + '_train': v for k, v in train_results.items()}
         test_results = {k + '_test': v for k, v in test_results.items()}
@@ -192,7 +175,7 @@ def main(cfg: DictConfig):
         if test_loss < best_loss:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), str(dir_checkpoint / 'best_model.pth'))
-            logging.info(f"Best new model at epoch {epoch} (lowest test cls loss: {test_loss})!")
+            log_multi_gpu(f"Best new model at epoch {epoch} (lowest test cls loss: {test_loss})!", local_rank)
 
             best_loss = test_loss
             best_epoch = epoch
@@ -200,7 +183,7 @@ def main(cfg: DictConfig):
 
         else:
             if not_improved_epochs > 15:
-                logging.info("Model has not improved for the last 10 epochs, stopping training")
+                log_multi_gpu("Model has not improved for the last 10 epochs, stopping training", local_rank)
                 break
             not_improved_epochs += 1
 
@@ -214,8 +197,8 @@ def main(cfg: DictConfig):
 
     if local_rank == 0:
         torch.save(model.state_dict(), str(dir_checkpoint / 'last_model.pth'))
-        logging.info(f'Last checkpoint! Checkpoint {epoch} saved!')
-        logging.info(f"Training completed, best_metric (f1-test): {best_f1:.4f} at epoch: {best_epoch}")
+        log_multi_gpu(f'Last checkpoint! Checkpoint {epoch} saved!', local_rank)
+        log_multi_gpu(f"Training completed, best_metric (f1-test): {best_f1:.4f} at epoch: {best_epoch}", local_rank)
 
 
 if __name__ == "__main__":

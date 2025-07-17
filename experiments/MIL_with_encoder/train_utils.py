@@ -24,14 +24,13 @@ from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerP
     MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2, ResNetDepth, TransDepth, CompassModel, \
     CompassModelV2, TwoStageCompass, TwoStageCompassV2, TwoStageCompassV3, TwoStageCompassV4, TwoStageCompassV5, \
     TwoStageCompassV6, DepthTumor
-from swin_models import SWINCompass, SWINClassifier
 from rel_models import ResNetRel
+from swin_models import SWINCompass, SWINClassifier
 from trainer import Trainer
 from trainer_reg import TrainerReg, RegularizedAttentionLoss
 
 
 def prepare_dataloader(cfg: DictConfig):
-
     if "kidney" in cfg.data.dataloader:
         if "pasted" in cfg.data.dataloader:
             pasted_experiment = True
@@ -45,13 +44,14 @@ def prepare_dataloader(cfg: DictConfig):
             'plane': 'axial', 'center_crop': cfg.data.crop_size, 'downsample': False,
             'roll_slices': cfg.data.roll_slices, 'model_type': cfg.model.model_type,
             'generate_spheres': True if cfg.data.dataloader == 'kidney_synth' else False, 'patchify': cfg.data.patchify,
-            'no_lungs': cfg.data.no_lungs, "pasted_experiment": pasted_experiment}
+            'no_lungs': cfg.data.no_lungs, "pasted_experiment": pasted_experiment, 'TUH_only': cfg.data.TUH_only,
+            'compass_filtering': cfg.data.compass_filter}
         train_dataset = KidneyDataloader(type="train",
                                          augmentations=None if not cfg.data.data_augmentations else transforms,
                                          **dataloader_params, random_experiment=cfg.data.random_experiment)
         test_dataset = KidneyDataloader(type="test", **dataloader_params)
 
-        loader_kwargs = {'num_workers': 6, 'pin_memory': True} if torch.cuda.is_available() else {}
+        loader_kwargs = {'num_workers': 4, 'pin_memory': True} if torch.cuda.is_available() else {}
 
         # create sampler for training set
         class_sample_count = [train_dataset.controls, train_dataset.cases]
@@ -118,7 +118,7 @@ def pick_model(cfg: DictConfig):
                                   ghostnorm=cfg.model.ghostnorm, resnet_type="18")
     elif cfg.model.name == 'resnet34V3':
         model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
-                                  num_attention_heads=cfg.model.num_heads, instnorm=True, resnet_type="34")
+                                  num_attention_heads=cfg.model.num_heads, instnorm=cfg.model.inst_norm, resnet_type="34")
     elif cfg.model.name == 'resnetselfattention':
         model = ResNetSelfAttention(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'posembed':

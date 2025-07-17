@@ -9,9 +9,8 @@ from monai.transforms import *
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
 sys.path.append('/users/arivajoo/GPAI')
-from data_utils import get_dataset_paths, set_orientation, downsample_scan, normalize_scan
+from data_utils import get_dataset_paths, set_orientation, downsample_scan, normalize_scan_new, normalize_scan, compass_filter
 from scipy import ndimage as ndi
-import raster_geometry as rg
 import time
 
 
@@ -48,8 +47,7 @@ class CT_dataloader(torch.utils.data.Dataset):
         self.labels = control_labels + tumor_labels
 
         print("Data length: ", len(self.img_paths), "Label length: ", len(self.labels))
-        print(
-            f"control: {len(control)}, tumor: {len(tumor)}")
+        print(f"control: {len(control)}, tumor: {len(tumor)}")
 
         self.classes = ["control", "tumor"]
 
@@ -105,7 +103,7 @@ class CT_dataloader(torch.utils.data.Dataset):
 
         time6 = time.time()
         # print("b4 norm: ", x.shape)
-        x = normalize_scan(x, single_channel=False)
+        x = normalize_scan_new(x)
 
         if w < 512 or h < 512:
             if w >= h:
@@ -198,7 +196,6 @@ class CT_DataloaderPatches(torch.utils.data.Dataset):
         ####
         scan, segmentation = x[:, :, :, 0], x[:, :, :, 1]
 
-
         upper_mask = segmentation < 3
         lower_mask = segmentation > 0
         full_mask = upper_mask * lower_mask
@@ -233,7 +230,7 @@ class CT_DataloaderPatches(torch.utils.data.Dataset):
                 x[:, :, i] = self.augmentations(np.expand_dims(x[:, :, i], 0))
             # data = self.augmentations(image=x) # for albumentations
             # x = data["image"]
-        x = np.expand_dims(x,0)
+        x = np.expand_dims(x, 0)
         if self.as_rgb:  # if we need 3 channel input
             if self.roll_slices:
 
@@ -258,7 +255,6 @@ class CT_DataloaderPatches(torch.utils.data.Dataset):
                     x[:, :, i] = self.augmentations(np.expand_dims(x[:, :, i], 0))
 
         x = normalize_scan(x, single_channel=False)
-
 
         return x, y, self.img_paths[index]
 
@@ -334,8 +330,7 @@ class CT_DataloaderLimited(torch.utils.data.Dataset):
         full_mask = upper_mask * lower_mask
         center = full_mask.sum(axis=(0, 1)).argsort()[-1]
         x = scan[:, :, center - 20:center + 20]
-        x = np.expand_dims(x,0)
-
+        x = np.expand_dims(x, 0)
 
         y = torch.tensor(self.labels[index])
 

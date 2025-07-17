@@ -1,5 +1,4 @@
 import gc
-import os
 import sys
 import time
 from contextlib import nullcontext
@@ -11,8 +10,10 @@ from tqdm import tqdm
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
-from misc_utils import get_percentage_of_scans_from_dataframe
 import torch.nn as nn
+
+from misc_utils import get_percentage_of_scans_from_dataframe
+from multi_gpu_utils import print_multi_gpu
 
 
 class DepthLoss(nn.Module):
@@ -33,8 +34,8 @@ class DepthLossV2(nn.Module):
         super().__init__()
         self.step = step
 
-    def create_step_matrix(self, step_value, distance_matrix):
-        matrix_size = distance_matrix.shape[0]
+    def create_step_matrix(self, step_value, matrix_size):
+        # matrix_size = distance_matrix.shape[0]
         steps = torch.zeros(matrix_size, matrix_size)
         steps = torch.diagonal_scatter(steps, torch.zeros(matrix_size), 0)
         for i in range(matrix_size):
@@ -48,7 +49,7 @@ class DepthLossV2(nn.Module):
         acceptable_step = self.step * z_spacing * nth_slice
         predictions = predictions[:, 0]
         distance_matrix = predictions.reshape(-1, 1) - predictions
-        steps = self.create_step_matrix(acceptable_step, distance_matrix).type(torch.HalfTensor).cuda()
+        steps = self.create_step_matrix(acceptable_step, len(predictions)).type(torch.HalfTensor).cuda()
         # acceptable steps calculated only on slice pairings where the order is correctly predicted
         idxs = distance_matrix >= 0
         distance_matrix[idxs] = distance_matrix[idxs] - 0.2 * steps[idxs]
@@ -81,14 +82,14 @@ class CompassLoss(nn.Module):
 
 
 class TrainerDepth:
-    def __init__(self, optimizer, loss_function,cfg, steps_in_epoch: int = 0, scheduler=None):
+    def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None):
 
         self.check = cfg.check
-        #self.device = torch.device("cuda")
+        # self.device = torch.device("cuda")
         #
-        #self.device = torch.device(int(os.environ['LOCAL_RANK']))
-        #print("trainer device:", self.device)
-        #self.device = device
+        # self.device = torch.device(int(os.environ['LOCAL_RANK']))
+        # print("trainer device:", self.device)
+        # self.device = device
         self.optimizer = optimizer
         self.loss_function = loss_function
         self.crop_size = cfg.data.crop_size
@@ -120,7 +121,7 @@ class TrainerDepth:
 
         return error
 
-    def run_one_epoch(self, model, data_loader, epoch: int, train: bool = True):
+    def run_one_epoch(self, model, data_loader, epoch: int, train: bool = True, local_rank=0):
 
         results = dict()
         epoch_loss = 0.
@@ -153,7 +154,6 @@ class TrainerDepth:
         attention_scores["controls"] = [[], []]
         time_data = time.time()
 
-
         for data, bag_label, meta in tepoch:
 
             if self.check:
@@ -167,9 +167,9 @@ class TrainerDepth:
             gc.collect()
 
             data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
-            #data = torch.permute(data, (0, 4, 1, 2, 3))
+            # data = torch.permute(data, (0, 4, 1, 2, 3))
 
-            #data = data.to(self.device, dtype=torch.float16, non_blocking=True)
+            # data = data.to(self.device, dtype=torch.float16, non_blocking=True)
             data = data.cuda(non_blocking=True).to(dtype=torch.float16)
 
             time_forward = time.time()
@@ -220,12 +220,13 @@ class TrainerDepth:
         depth_loss /= nr_of_batches
         class_loss /= nr_of_batches
 
-        print("data speed: ", round(np.mean(data_times), 3), "forward speed ", round(np.mean(forward_times), 3),
-              "backprop speed: ", round(np.mean(backprop_times), 3), "loss speed: ", round(np.mean(loss_times), 3), )
+        print_multi_gpu(
+            f"data speed: {round(np.mean(data_times), 3)} forward speed:{round(np.mean(forward_times), 3)} backprop speed:  {round(np.mean(backprop_times), 3)} loss speed: {round(np.mean(loss_times), 3)}",
+            local_rank)
 
-        print(
+        print_multi_gpu(
             '{}: loss: {:.4f}'.format(
-                "Train" if train else "Validation", epoch_loss))
+                "Train" if train else "Validation", epoch_loss), local_rank)
 
         results["epoch"] = epoch
         results["loss"] = epoch_loss

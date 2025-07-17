@@ -5,6 +5,7 @@ from typing import List
 import matplotlib
 import nibabel as nib
 import numpy as np
+import pandas as pd
 import raster_geometry as rg
 import torch
 import torch.nn.functional as F
@@ -132,14 +133,23 @@ def get_dataset_paths(datasets: List[str], dataset_type: str, percentage: float 
 def set_orientation(x, path, plane):
     # PLANES: set it into default plane (axial)
     # if transformations are needed we start from this position
-    if not "kits" in path:
+
+    if "kits" in path:  # kits is in another orientation
+        x = np.transpose(x, (1, 2, 0))
+    if "parnu" in path:
+        print("parnu in path")
+        x = np.flip(x, axis=1)
+
+        if len(x.shape) == 3:
+            x = np.transpose(x, (1, 0, 2))
+        elif len(x.shape) == 4:
+            x = np.transpose(x, (1, 0, 2, 3))
+    else:
         x = np.flip(x, axis=1)
         if len(x.shape) == 3:
             x = np.transpose(x, (1, 0, 2))
         elif len(x.shape) == 4:
             x = np.transpose(x, (1, 0, 2, 3))
-    else:  # kits is in another orientation
-        x = np.transpose(x, (1, 2, 0))
     # this should give the most common axial representation: (patient on their back)
     if plane == "axial":
         pass
@@ -192,6 +202,13 @@ def normalize_scan(x, single_channel=False, model_type="2D", remove_bones=False)
         return norm_x
 
 
+def normalize_scan_new(x):
+    clipped_x = np.clip(x, -150, 250)  # soft tissue window
+    norm_x = (clipped_x - np.min(clipped_x)) / (np.max(clipped_x) - np.min(clipped_x))
+
+    return norm_x
+
+
 def remove_empty_tiles(data):
     # 3, 128, 128, 1520
     # find minimum values per patch
@@ -220,40 +237,47 @@ def remove_empty_tiles(data):
 #     return x
 
 
-def get_kidney_datasets(type: str, no_lungs: bool = False):
+def get_kidney_datasets(type: str, no_lungs: bool = False, TUH_only: bool = False):
     # type = train, test
     # base_path = '/gpfs/space/projects/BetterMedicine/joonas/'  # hpc
 
-    if no_lungs:
-        base_path = '/scratch/project_465001979/ct_data/'
-    else:
-        base_path = '/project/project_465001979/ct_data/'  # lumi
+    base_path = '/scratch/project_465001979/ct_data/'  # lumi
 
     tuh_train_data_path = base_path + 'kidney/tuh_train/'
     tuh_test_data_path = base_path + 'kidney/tuh_test/'
-    parnu_data_path = base_path + 'kidney/parnu/'
     other_datasets_path = base_path + 'kidney/data'
 
     all_controls = []
     all_tumors = []
-    # tuh
+
     for data_path in [tuh_train_data_path, tuh_test_data_path]:  # , parnu_data_path]:
         control_path = data_path + 'controls/images/' + type + '/*nii.gz'
         tumor_path = data_path + 'cases/images/' + type + '/*nii.gz'
-        if "parnu" in control_path:
-            control_path = control_path.replace("/project/", "/scratch/")
-            tumor_path = tumor_path.replace("/project/", "/scratch/")
+        # if "parnu" in control_path:
+        #     control_path = control_path.replace("/project/", "/scratch/")
+        #     tumor_path = tumor_path.replace("/project/", "/scratch/")
         control = glob.glob(control_path)
         tumor = glob.glob(tumor_path)
 
         all_controls.extend(control)
         all_tumors.extend(tumor)
+    if TUH_only:
+        return all_controls, all_tumors
 
-    # # kits dataset + kirc dataset
-    # tumor = glob.glob(other_datasets_path + '/imagesTr/' + type + '/*nii.gz')
-    # all_tumors.extend(tumor)
+    else:
+        # # kits dataset + kirc dataset
+        tumor = glob.glob(other_datasets_path + '/imagesTr/' + type + '/*nii.gz')
+        all_tumors.extend(tumor)
 
-    return all_controls, all_tumors
+        parnu_data_path = base_path + 'kidney/parnu/'
+        control_path = parnu_data_path + 'controls/images/' + type + '/*nii.gz'
+        tumor_path = parnu_data_path + 'cases/images/' + type + '/*nii.gz'
+        control = glob.glob(control_path)
+        tumor = glob.glob(tumor_path)
+        all_controls.extend(control)
+        all_tumors.extend(tumor)
+
+        return all_controls, all_tumors
 
 
 def get_source_label(path):
@@ -313,7 +337,7 @@ def get_pasted_small_dateset():
     filter_list = []
     for path in all_tumors:
 
-        id = path.replace("_0000.nii.gz","").split("_")[-2]
+        id = path.replace("_0000.nii.gz", "").split("_")[-2]
         if id not in filter_list:
             filter_list.append(id)
 
@@ -350,3 +374,30 @@ def remove_table_3d(img):
     end = time.time()
     # print("time: ",end-start)
     return maskedimg
+
+
+class CompassFilter:
+    def __init__(self, dataframe_path_train: str, dataframe_path_test: str):
+        super().__init__()
+
+        self.train = pd.read_csv(dataframe_path_train)
+        self.test = pd.read_csv(dataframe_path_test)
+
+        gb = self.train.groupby(['case_id'])
+        grouped_train = gb.agg({'weights': [np.min, np.max]})
+
+        self.cutoff_min = grouped_train["weights"]["amin"].quantile(q=0.8)
+        self.cutoff_max = grouped_train["weights"]["amax"].quantile(q=0.2)
+        print("Compass cutoffs: ",self.cutoff_min, self.cutoff_max)
+
+    def compass_filter_indexes(self, case_id: str, train: bool = True):
+        if train:
+            scan = self.train.loc[self.train["case_id"] == case_id]
+        else:
+            scan = self.test.loc[self.test["case_id"] == case_id]
+
+        filtered_scan = scan.loc[(scan["weights"] > self.cutoff_min) & (scan["weights"] < self.cutoff_max)]
+        index_last = filtered_scan.iloc[-1]["index"]
+        index_first = filtered_scan.iloc[0]["index"]
+        # better_filtered_scan = scan.loc[(scan["index"] > index_first) & (scan["index"] < index_last)]
+        return index_first, index_last
