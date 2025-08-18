@@ -141,7 +141,7 @@ class Trainer3DDepth:
         attention_scores["cases"] = [[], []]
         attention_scores["controls"] = [[], []]
         time_data = time.time()
-        for data, bag_label, meta in tepoch:
+        for data, bag_label, meta, grid in tepoch:
 
             if self.check:
                 print("data shape: ", data.shape)
@@ -156,19 +156,19 @@ class Trainer3DDepth:
             # data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))
 
             data = data.to(self.device, dtype=torch.float16, non_blocking=True)
-            #bag_label = bag_label.to(self.device, non_blocking=True)
+            # bag_label = bag_label.to(self.device, non_blocking=True)
 
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
-                position_scores, shape = model.forward(data)
-
+                # position_scores, shape = model.forward(data)
+                position_scores = model.forward(data)  # d,h,w
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
                 time_loss = time.time()
 
-                hloss, wloss, dloss = self.loss_function(position_scores, spacings=meta[2], shape=shape)
+                hloss, wloss, dloss = self.loss_function(position_scores, spacings=meta[2], shape=grid)
 
                 loss_time = time.time() - time_loss
                 loss_times.append(loss_time)

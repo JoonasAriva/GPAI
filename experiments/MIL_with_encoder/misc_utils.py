@@ -49,12 +49,16 @@ def center_crop_dataframe(df, crop_size):
     return df
 
 
-def prepare_statistics_dataframe(df, case_id, crop_size, nth_slice, roll_slices):
+def prepare_statistics_dataframe(df, case_id, crop_size, nth_slice, roll_slices, compass_idxs: tuple = None):
     scan_df = df.loc[df["file_name"] == case_id]
 
+    scan_df = scan_df.reindex(index=scan_df.index[::-1])
     scan_df = scan_df.copy()[::nth_slice]
     # print("len after nth slice sampling: ", len(scan_df))
     cropped_scan_df = center_crop_dataframe(scan_df, crop_size)
+    if compass_idxs is not None:
+        low_index, high_index = compass_idxs
+        cropped_scan_df = cropped_scan_df[low_index:high_index]
     if roll_slices:
         cropped_scan_df = cropped_scan_df[1:-1].copy()
     return cropped_scan_df

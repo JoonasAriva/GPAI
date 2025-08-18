@@ -105,7 +105,7 @@ class ScoreCAM_for_attention(BaseCAM):
 
         # scores = out["attention_weights"]
         # rel_scores = out["relevancy_scores"]
-        important_slice_indices = scores.cpu().flatten().argsort()[:6]
+        important_slice_indices = scores.cpu().flatten().argsort()[:4]
 
         # position_scores, tumor_score, rel_scores
 
@@ -166,19 +166,8 @@ class ScoreCAM_for_attention(BaseCAM):
 
                 # THIS PART IS FOR SIMPLE MIL MODEL
                 out = self.model_arch(filtered_input, scan_end=len(important_slice_indices), cam=True)
-                #score = out["attention_weights"]
-                score = out["scores"]
-
-                # THIS PART IS FOR COMPASS MODELS
-                # out = self.model_arch(filtered_input, depth_scores=depth_scores,
-                #                       scan_end=len(important_slice_indices), cam=True)
-                # position_scores = out["depth_scores"]
-                # new_tumor_score = out["scores"]
-                # new_rel_score = out["relevancy_scores"]
-                # if tumor:
-                #     score = new_tumor_score
-                # else:
-                #     score = new_rel_score
+                score = out["attention_weights"]
+                #score = out["scores"]
 
                 new_attention = torch.squeeze(score).view(-1, 1, 1)
 

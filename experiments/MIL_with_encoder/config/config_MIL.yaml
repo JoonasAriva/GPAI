@@ -15,7 +15,7 @@ training:
 
 model:
   classes: 1
-  name: 'resnetselfattention'
+  name: 'resnet34V3'
   model_type: '2D'
   pretrained_imagenet: True
   neighbour_range: 0
@@ -37,7 +37,7 @@ data:
   crop_size: 302
   as_rgb: True
   roll_slices: True
-  TUH_only: True
+  TUH_only: False
   compass_filter : True
   important_slices_only: False
   no_lungs: False
