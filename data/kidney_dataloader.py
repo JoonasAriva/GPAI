@@ -8,6 +8,7 @@ import raster_geometry as rg
 import torch
 import torchio as tio
 from monai.transforms import *
+from monai.transforms import GridPatch
 from sklearn.model_selection import train_test_split
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
@@ -102,6 +103,14 @@ class KidneyDataloader(torch.utils.data.Dataset):
 
         if self.generate_spheres:
             self.synth_data = make_sphere_coords(self.img_paths, self.labels, deterministic=True)
+
+        self.patch_size = (1, 256, 256)
+        self.stride = (1, 256, 256)
+        self.grid_patch = GridPatch(
+            patch_size=self.patch_size,
+            stride=self.stride
+        )
+        self.foreground_threshold = 0.2
 
     def pick_sample_frequency(self, nr_of_original_slices: int, nth_slice: int):
 
@@ -218,30 +227,28 @@ class KidneyDataloader(torch.utils.data.Dataset):
         # x = x.as_tensor()
 
         if self.patchify:
-            x = torch.Tensor(x)
+            x = np.transpose(x, (0, 3, 1, 2))
+            depth = x.shape[1]
+            print("Before patchify: ", x.shape)
+            patches = torch.squeeze(self.grid_patch(x))
+            print("After patchify: ", patches.shape)
+            if self.foreground_threshold > 0:
+                num_patches = patches.shape[0]
+                indices = torch.arange(num_patches)
+                not_background_patches = (patches > 0.05).float().mean(dim=(1, 2, 3))
 
-            if self.type == "train":
-                shift_x, shift_y = np.random.choice([0, -64, 64]), np.random.choice([0, -64, 64])
-                x = torch.roll(x, shifts=(shift_x, shift_y), dims=(1, 2))
-            patches = x.unfold(1, 150, 128).unfold(2, 150, 128)
+                keep_mask = not_background_patches > self.foreground_threshold
 
-            last_fold1 = torch.permute(x[:, -150:, :, :].unfold(2, 150, 128), (0, 2, 3, 1, 4)).reshape(3, -1, 150, 150)
+                patches = patches[keep_mask]
 
-            # last_fold2 = x[:, :, -150:, :].unfold(1, 150, 128)
+                filtered_indices = indices[keep_mask]
 
-            # last_fold2 = torch.permute(last_fold2, (0, 1, 3, 4, 2))
+                # Compute grid dims
+                grid_H = (x.shape[2] - self.patch_size[1]) // self.stride[1] + 1
+                grid_W = (x.shape[3] - self.patch_size[2]) // self.stride[2] + 1
 
-            # last_fold2 = last_fold2.reshape(3, -1, 150, 150)
-
-            last_fold2 = torch.permute(x[:, :, -150:, :].unfold(1, 150, 128), (0, 1, 3, 4, 2)).reshape(3, -1, 150, 150)
-
-            last_fold3 = torch.permute(x[:, -150:, -150:, :], (0, 3, 1, 2)).reshape(3, -1, 150, 150)
-            patches = patches.reshape(3, -1, 150, 150)
-
-            patches_final = torch.cat((patches, last_fold1, last_fold2, last_fold3), dim=1)
-            patches_final = torch.permute(patches_final, (0, 2, 3, 1))
-            return patches_final, y, (case_id, nth_slice, x)
-            # x = remove_empty_tiles(x)
+                return patches, y, (case_id, spacings, path, nth_slice), (
+                    grid_H, grid_W, depth), filtered_indices, num_patches
 
         height_before_padding = x.shape[-1]
         if not self.model_type == "3D":

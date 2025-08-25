@@ -69,7 +69,7 @@ def main(cfg: DictConfig):
         proj_name = "MIL_encoder_24"
     elif cfg.data.dataloader == "synthetic" or "kidney_synth":
         proj_name = "MIL_encoder_synth24"
-    if cfg.experiment == 'depth':
+    if 'depth' in cfg.experiment:
         if cfg.data.dataloader == "abdomen_atlas":
             proj_name = "abdomen_atlas_depth"
             steps_in_epoch = 4666
@@ -85,7 +85,8 @@ def main(cfg: DictConfig):
 
     if cfg.model.pretrained:
         sd = torch.load(
-            '/users/arivajoo/results/depth/train/resnetdepth/kidney_real/2025-07-14/11-17-49/checkpoints/best_model.pth',map_location='cuda:0')
+            '/users/arivajoo/results/depth/train/resnetdepth/kidney_real/2025-07-14/11-17-49/checkpoints/best_model.pth',
+            map_location='cuda:0')
         new_sd = {key.replace("module.", ""): value for key, value in sd.items()}
         model.load_state_dict(state_dict=new_sd, strict=False)
         logging.info('Loaded depth pretrained model')
@@ -162,7 +163,8 @@ def main(cfg: DictConfig):
         if cfg.training.multi_gpu == True:
             epoch_results = reduce_results_dict(epoch_results)
 
-        test_loss = epoch_results["class_loss_test"]
+        # test_loss = epoch_results["class_loss_test"]
+        test_loss = epoch_results["loss_test"]
 
         # epoch_results = reduce_results_dict(epoch_results)
         # print_multi_gpu(epoch_results, local_rank)

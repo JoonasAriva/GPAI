@@ -18,12 +18,14 @@ from data.DistriputedDataCustomSampler import DistributedSamplerWrapper
 from data.kidney_dataloader import KidneyDataloader, AbdomenAtlasLoader
 from data.synth_dataloaders import SynthDataloader
 from depth_trainer import TrainerDepth, DepthLossV2, CompassLoss
+from depth_trainer2Dpatches import Trainer2DPatchDepth, DepthLoss2DPatches
 from depth_trainer3D import Trainer3DDepth, DepthLoss3D
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
     ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention, \
     MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2, ResNetDepth, TransDepth, CompassModel, \
     CompassModelV2, TwoStageCompass, TwoStageCompassV2, TwoStageCompassV3, TwoStageCompassV4, TwoStageCompassV5, \
     TwoStageCompassV6, DepthTumor
+from models3d import ResNetDepth2dPatches
 from rel_models import ResNetRel
 from swin_models import SWINCompass, SWINClassifier
 from trainer import Trainer
@@ -51,7 +53,7 @@ def prepare_dataloader(cfg: DictConfig):
                                          **dataloader_params, random_experiment=cfg.data.random_experiment)
         test_dataset = KidneyDataloader(type="test", **dataloader_params)
 
-        loader_kwargs = {'num_workers': 4, 'pin_memory': True} if torch.cuda.is_available() else {}
+        loader_kwargs = {'num_workers': 1 if cfg.check else 4, 'pin_memory': True} if torch.cuda.is_available() else {}
 
         # create sampler for training set
         class_sample_count = [train_dataset.controls, train_dataset.cases]
@@ -118,7 +120,8 @@ def pick_model(cfg: DictConfig):
                                   ghostnorm=cfg.model.ghostnorm, resnet_type="18")
     elif cfg.model.name == 'resnet34V3':
         model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
-                                  num_attention_heads=cfg.model.num_heads, instnorm=cfg.model.inst_norm, resnet_type="34")
+                                  num_attention_heads=cfg.model.num_heads, instnorm=cfg.model.inst_norm,
+                                  resnet_type="34")
     elif cfg.model.name == 'resnetselfattention':
         model = ResNetSelfAttention(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'posembed':
@@ -177,6 +180,8 @@ def pick_model(cfg: DictConfig):
         model = DepthTumor(instnorm=cfg.model.inst_norm, ghostnorm=cfg.model.ghostnorm)
     elif cfg.model.name == 'resnetrel':
         model = ResNetRel(instnorm=cfg.model.inst_norm, ghostnorm=cfg.model.ghostnorm)
+    elif cfg.model.name == 'depth_patches2D':
+        model = ResNetDepth2dPatches()
 
     return model
 
@@ -211,6 +216,10 @@ def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch, adv_optimizer=None):
                                             cfg=cfg,
                                             steps_in_epoch=steps_in_epoch,
                                             progressive_sigmoid_scaling=cfg.model.progressive_sigmoid_scaling)
+    elif cfg.experiment == "patches2D_depth":
+        loss_function = DepthLoss2DPatches(step=0.5).cuda()
+        trainer = Trainer2DPatchDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                                      steps_in_epoch=steps_in_epoch)
     else:
         loss_function = torch.nn.BCEWithLogitsLoss().cuda()
         trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,

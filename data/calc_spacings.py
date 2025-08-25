@@ -11,6 +11,7 @@ print(os.getcwd())
 sys.path.append('/users/arivajoo/GPAI')
 
 from data.kidney_dataloader import KidneyDataloader
+from data_utils import set_orientation_nib
 
 dataloader_params = {
     'only_every_nth_slice': 3, 'as_rgb': True,
@@ -48,7 +49,7 @@ def compute_spacings(dataset):
         label = get_source_label(path)
 
         scan = nib.load(path)
-        # scan = set_orientation(scan, path, "axial")
+        scan = set_orientation_nib(scan)
         spacings = [*scan.header.get_zooms()]
         row = pd.DataFrame([spacings], columns=["h_spacing", "w_spacing", "d_spacing"])
         row[["shape_h", "shape_w", "shape_d"]] = scan.shape
