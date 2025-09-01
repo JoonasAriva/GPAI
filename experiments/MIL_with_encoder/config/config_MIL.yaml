@@ -12,7 +12,6 @@ training:
   seed: 1
   multi_gpu: True
 
-
 model:
   classes: 1
   name: 'depth_patches2D'
@@ -26,8 +25,6 @@ model:
   relevancy_head: False
   progressive_sigmoid_scaling: True
 
-
-
 data:
   batch_size: 1
   take_every_nth_slice: 3
@@ -38,7 +35,7 @@ data:
   as_rgb: True
   roll_slices: True
   TUH_only: False
-  compass_filter : True
+  compass_filter: True
   important_slices_only: False
   no_lungs: False
   patchify: True

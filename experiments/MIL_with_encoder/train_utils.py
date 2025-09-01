@@ -16,6 +16,7 @@ from compass_two_stage_adversary import TrainerCompassTwoStageAdv
 from compass_two_stage_trainer import TwoStageCompassLoss, TrainerCompassTwoStage
 from data.DistriputedDataCustomSampler import DistributedSamplerWrapper
 from data.kidney_dataloader import KidneyDataloader, AbdomenAtlasLoader
+from data.patch3d_dataloader import KidneyDataloader3D
 from data.synth_dataloaders import SynthDataloader
 from depth_trainer import TrainerDepth, DepthLossV2, CompassLoss
 from depth_trainer2Dpatches import Trainer2DPatchDepth, DepthLoss2DPatches
@@ -48,10 +49,18 @@ def prepare_dataloader(cfg: DictConfig):
             'generate_spheres': True if cfg.data.dataloader == 'kidney_synth' else False, 'patchify': cfg.data.patchify,
             'no_lungs': cfg.data.no_lungs, "pasted_experiment": pasted_experiment, 'TUH_only': cfg.data.TUH_only,
             'compass_filtering': cfg.data.compass_filter}
-        train_dataset = KidneyDataloader(type="train",
-                                         augmentations=None if not cfg.data.data_augmentations else transforms,
-                                         **dataloader_params, random_experiment=cfg.data.random_experiment)
-        test_dataset = KidneyDataloader(type="test", **dataloader_params)
+
+        if cfg.data.patchify:
+            train_dataset = KidneyDataloader3D(type="train",
+                                               augmentations=None if not cfg.data.data_augmentations else transforms,
+                                               **dataloader_params)
+            test_dataset = KidneyDataloader3D(type="test", **dataloader_params)
+
+        else:
+            train_dataset = KidneyDataloader(type="train",
+                                             augmentations=None if not cfg.data.data_augmentations else transforms,
+                                             **dataloader_params, random_experiment=cfg.data.random_experiment)
+            test_dataset = KidneyDataloader(type="test", **dataloader_params)
 
         loader_kwargs = {'num_workers': 1 if cfg.check else 4, 'pin_memory': True} if torch.cuda.is_available() else {}
 

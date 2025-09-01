@@ -29,23 +29,33 @@ class DepthLoss2DPatches(nn.Module):
 
     def forward(self, predictions, spacings, shape, filtered_indices, nth_slice):
         # TODO: add spacings into step matrix
+
         h, w, d = shape
         # meta information about scan spacing/slice thickness is not in right shape and order for this algorithm
         new_spacing = torch.unsqueeze(torch.permute(torch.stack(spacings), (1, 0)), 0)
-        #print("new spacing shape: ", new_spacing.shape)
+        # print("new spacing shape: ", new_spacing.shape)
         new_spacing[:, :, 2] = new_spacing[:, :, 2] * nth_slice  # take into account slice sampling
+
         index_tensor = self.create_index_tensor(h.item(), w.item(), d.item())
+
         # multiply indexing tensor with reordered 3d spacings
         # self.step is just for scaling
         index_tensor = index_tensor * new_spacing * self.step
         # calculate the manhattan distances for predictions and index matrix
         distance_matrix = self.calc_manhattan_distances_in_3d(predictions)
-        steps = self.calc_manhattan_distances_in_3d(index_tensor).cuda()
+        steps = self.calc_manhattan_distances_in_3d(index_tensor).float().cuda()
 
         # acceptable steps calculated only on slice pairings where the order is correctly predicted
         # We define the "correct" order to be positive
         idxs = distance_matrix >= 0
+
+        # try:
         distance_matrix[idxs] = distance_matrix[idxs] - 0.2 * steps[idxs]
+        # except:
+        #     print("pred shape: ", predictions.shape)
+        #     print("spacings: ", new_spacing)
+        #     print("distance_matrix: ", distance_matrix.shape)
+        #     print("idxs: ", idxs.shape)
         idxs = distance_matrix >= 0  # this is updated now
         # remove the remaining part of allowed step
         distance_matrix[idxs] = torch.maximum(distance_matrix[idxs] - 0.8 * steps[idxs],
@@ -161,7 +171,7 @@ class Trainer2DPatchDepth:
             if self.check:
                 print("data shape: ", data.shape)
 
-            data = torch.squeeze(torch.as_tensor(data.array))
+            data = torch.squeeze(data)
             data = data.to(self.device, dtype=torch.float16, non_blocking=True)
 
             time_forward = time.time()
@@ -181,9 +191,11 @@ class Trainer2DPatchDepth:
                 forward_times.append(forward_time)
 
                 time_loss = time.time()
-
-                hloss, wloss, dloss = self.loss_function(full_features, spacings=meta[1], shape=grid,
-                                                         filtered_indices=filtered_indices, nth_slice=meta[3])
+                try:
+                    hloss, wloss, dloss = self.loss_function(full_features, spacings=meta[1], shape=grid,
+                                                             filtered_indices=filtered_indices, nth_slice=meta[3])
+                except:
+                    print("meta: ", meta)
 
                 loss_time = time.time() - time_loss
                 loss_times.append(loss_time)

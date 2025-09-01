@@ -363,9 +363,16 @@ def remove_table_3d(img):
 
     keep_mask = filled_region[:, :, 1:-1]
 
+    n = 3
+    structure = torch.concat((torch.zeros(3, 3, 1), torch.ones(3, 3, 1), torch.zeros(3, 3, 1)), dim=2)
+
+    eroded_binary = ndi.binary_erosion(keep_mask, iterations=n, structure=structure)
+    dilated_mask = ndi.binary_dilation(eroded_binary, iterations=n, structure=structure)
+
     # remove small objects not connected to the main body. 40000 pixels per slice seems to do the work for 512x512 resolution
-    min_size = 40000 * img.shape[2]
-    keep_mask = morphology.remove_small_objects(keep_mask, min_size=min_size)
+    # changed to 20 000 due to resizing/ spacing normalization
+    min_size = 40000 * img.shape[2] * (img.shape[0]/512)
+    keep_mask = morphology.remove_small_objects(dilated_mask, min_size=min_size)
     # keep_mask = np.expand_dims(keep_mask, 0)
 
     maskedimg = img.detach().clone()
@@ -388,7 +395,7 @@ class CompassFilter:
 
         self.cutoff_min = grouped_train["weights"]["amin"].quantile(q=0.8)
         self.cutoff_max = grouped_train["weights"]["amax"].quantile(q=0.2)
-        print("Compass cutoffs: ",self.cutoff_min, self.cutoff_max)
+        print("Compass cutoffs: ", self.cutoff_min, self.cutoff_max)
 
     def compass_filter_indexes(self, case_id: str, train: bool = True):
         if train:

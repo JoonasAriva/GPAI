@@ -184,7 +184,7 @@ def main(cfg: DictConfig):
             not_improved_epochs = 0
 
         else:
-            if not_improved_epochs > 15:
+            if not_improved_epochs > 20:
                 log_multi_gpu("Model has not improved for the last 10 epochs, stopping training", local_rank)
                 break
             not_improved_epochs += 1
