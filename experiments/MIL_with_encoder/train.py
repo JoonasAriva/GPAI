@@ -106,7 +106,7 @@ def main(cfg: DictConfig):
         model = DDP(  # <- We need to wrap the model with DDP
             model,
             device_ids=[local_rank],  # <- and specify the device_ids/output_device
-            find_unused_parameters=True
+            find_unused_parameters=False #was True before
         )
     else:
         if torch.cuda.is_available():

@@ -87,6 +87,37 @@ class DepthLoss2DPatches(nn.Module):
         return losses  # order:  y_loss, x_loss, z_loss
 
 
+class DepthLossSamplePatches(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def calc_manhattan_distances_in_3d(self, matrix):
+        return matrix.reshape(-1, 1, 3) - matrix.float()
+
+    def forward(self, predictions, real_coordinates, filtered_indices):
+        steps = self.calc_manhattan_distances_in_3d(real_coordinates).float().cuda()
+        # multiply indexing tensor with reordered 3d spacings
+
+        # calculate the manhattan distances for predictions and index matrix
+        pred_distance_matrix = self.calc_manhattan_distances_in_3d(predictions)
+
+        idxs = pred_distance_matrix >= 0
+
+        pred_distance_matrix[idxs] = pred_distance_matrix[idxs] - torch.abs(steps[idxs])
+
+        # do not generate loss from distances to patches, which have been filtered out
+        # filtered indices - indices we want to keep, real patches
+        pred_distance_matrix[~filtered_indices, :, :] = 0
+        pred_distance_matrix[:, ~filtered_indices, :] = 0
+
+        pred_distance_matrix[~idxs] = 0
+
+        losses = [pred_distance_matrix[:, :, i].abs().sum(dim=(0, 1)) / (len(pred_distance_matrix) ** 2) for i in
+                  range(3)]
+
+        return losses  # order:  y_loss, x_loss, z_loss
+
+
 class Trainer2DPatchDepth:
     def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None):
 
@@ -102,6 +133,7 @@ class Trainer2DPatchDepth:
         self.important_slices_only = cfg.data.important_slices_only
         self.update_freq = cfg.training.weight_update_freq
         self.slice_level_supervision = cfg.data.slice_level_supervision
+        self.scaler = torch.cuda.amp.GradScaler()
         if cfg.data.no_lungs:
             path = '/scratch/project_465001111/ct_data/kidney/slice_statistics.csv'
             self.statistics = pd.read_csv(path)
@@ -125,9 +157,11 @@ class Trainer2DPatchDepth:
 
     def run_one_epoch(self, model, data_loader, epoch: int, train: bool = True, local_rank: int = 0):
 
+        print_multi_gpu(f"START EPOCH {epoch}: allocated MB:{torch.cuda.memory_allocated() / 1024 ** 2}",
+                        local_rank)
+
         results = dict()
         epoch_loss = 0.
-        depth_loss = 0.
         d_loss = 0.
         h_loss = 0.
         w_loss = 0.
@@ -141,25 +175,17 @@ class Trainer2DPatchDepth:
             model.train()
         else:
             model.eval()
-            # model.disable_dropout()
 
-        scaler = torch.cuda.amp.GradScaler()
         self.optimizer.zero_grad(set_to_none=True)
         data_times = []
         forward_times = []
         backprop_times = []
         loss_times = []
-        outputs = []
-        targets = []
 
-        attention_scores = dict()
-        attention_scores["all_scans"] = [[], []]  # first is for all label acc, second is tumor specific
-        attention_scores["cases"] = [[], []]
-        attention_scores["controls"] = [[], []]
         time_data = time.time()
 
-        # patches, y, (case_id, spacings, path), (grid_H, grid_W, depth), filtered_indices, num_patches
-        for data, bag_label, meta, grid, filtered_indices, num_patches in tepoch:
+        # patches, y, (case_id, new_spacings, path, nth_slice), filtered_indices, num_patches, patch_centers
+        for data, bag_label, meta, filtered_indices, num_patches, patch_centers in tepoch:
 
             data_time = time.time() - time_data
             data_times.append(data_time)
@@ -169,33 +195,26 @@ class Trainer2DPatchDepth:
             gc.collect()
 
             if self.check:
-                print("data shape: ", data.shape)
+                print("data shape: ", data.shape, flush=True)
 
             data = torch.squeeze(data)
             data = data.to(self.device, dtype=torch.float16, non_blocking=True)
 
             time_forward = time.time()
-            with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
+            grad_ctx = torch.no_grad() if not train else nullcontext()
+            with torch.cuda.amp.autocast(), grad_ctx:
                 features = model.forward(data)
                 F = features.shape[1]
-                full_features = torch.zeros(num_patches, F, device=features.device)
-                full_features[filtered_indices] = features.float()
-
-                # num_slices = grid[2]
-                # restored_pos_scores = einops.rearrange(full_features, '(s gh gw) f -> s gh gw f',
-                #                                       s=num_slices, gh=grid[0], gw=grid[1])
-
-                # print("restored:", restored_pos_scores.shape)
+                full_features = torch.zeros(num_patches, F, device=features.device, dtype=features.dtype)
+                full_features[filtered_indices] = features
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
                 time_loss = time.time()
-                try:
-                    hloss, wloss, dloss = self.loss_function(full_features, spacings=meta[1], shape=grid,
-                                                             filtered_indices=filtered_indices, nth_slice=meta[3])
-                except:
-                    print("meta: ", meta)
+
+                hloss, wloss, dloss = self.loss_function(full_features, patch_centers,
+                                                         filtered_indices=filtered_indices)
 
                 loss_time = time.time() - time_loss
                 loss_times.append(loss_time)
@@ -203,25 +222,22 @@ class Trainer2DPatchDepth:
 
             if train:
                 time_backprop = time.time()
-                scaler.scale(depth_loss).backward()
+                self.scaler.scale(depth_loss).backward()
                 backprop_time = time.time() - time_backprop
                 backprop_times.append(backprop_time)
                 if (step) % self.update_freq == 0 or (step) == len(data_loader):
 
-                    scaler.step(self.optimizer)
-                    scaler.update()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
                     if self.scheduler:
                         self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)
 
-            torch.cuda.empty_cache()
-            torch.cuda.reset_max_memory_allocated()
+            epoch_loss += depth_loss.item()
 
-            epoch_loss += depth_loss.item() * self.update_freq
-            # depth_loss += d_loss * self.update_freq
-            d_loss += dloss * self.update_freq
-            w_loss += wloss * self.update_freq
-            h_loss += hloss * self.update_freq
+            d_loss += dloss.item()
+            w_loss += wloss.item()
+            h_loss += hloss.item()
 
             if step >= 6 and self.check:
                 break
@@ -233,10 +249,7 @@ class Trainer2DPatchDepth:
 
             time_data = time.time()
 
-        # calculate loss and error for epoch
-
         epoch_loss /= nr_of_batches
-        # depth_loss /= nr_of_batches
         d_loss /= nr_of_batches
         h_loss /= nr_of_batches
         w_loss /= nr_of_batches
@@ -251,9 +264,17 @@ class Trainer2DPatchDepth:
 
         results["epoch"] = epoch
         results["loss"] = epoch_loss
-        # results["depth_loss"] = depth_loss
         results["d_loss"] = d_loss
         results["h_loss"] = h_loss
         results["w_loss"] = w_loss
+
+        print_multi_gpu(f"END EPOCH {epoch}: allocated MB:{torch.cuda.memory_allocated() / 1024 ** 2}",
+                        local_rank)
+        print_multi_gpu(f"END EPOCH {epoch}: reserved  MB:{torch.cuda.memory_reserved() / 1024 ** 2}",
+                        local_rank)
+
+        del data, features, full_features, hloss, wloss, dloss, depth_loss
+        torch.cuda.empty_cache()
+        gc.collect()
 
         return results

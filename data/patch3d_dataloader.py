@@ -76,13 +76,13 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         self.classes = ["control", "tumor"]
         self.patch_size = patch_size
         self.stride = patch_size
-        self.grid = (4,3)
+        self.grid = (4, 3)
         self.grid_split = GridSplit(grid=self.grid, size=None)
         self.grid_patch = GridPatch(
             patch_size=self.patch_size,
             stride=self.stride
         )
-        self.foreground_threshold = 0.3
+        self.foreground_threshold = 0.25
         self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))
         self.air_cropper = CropForeground(select_fn=threshold_f, margin=0, allow_smaller=False)
         self.exact_path = None
@@ -173,13 +173,30 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
 
         x = normalize_scan_new(x)
 
-        x = np.transpose(x, (0, 3, 1, 2))
+        x = np.transpose(x, (0, 3, 1, 2))  # C, D, H, W
         d = x.shape[1]
-        patches = torch.as_tensor(self.extract_patches(x))
+
+        D, H, W = x.shape[1:]
+        edge_buffer = 75
+        N = 100
+        patch_centers = np.random.uniform(np.array([0, edge_buffer, edge_buffer]),
+                                          np.array([D, H - edge_buffer, W - edge_buffer]), size=np.array([N, 3]))
+
+        patch_size = (1, 150, 150)
+
+        patches = []
+        for center in patch_centers:
+            cropper = SpatialCrop(roi_center=center, roi_size=patch_size)
+            patch = cropper(x)  # (C,64,64)
+            patches.append(patch)
+
+        patches = torch.squeeze(torch.stack(patches))
+
+        # patches = torch.as_tensor(self.extract_patches(x))
 
         # print("all patches: ", patches.shape)
         # print("before filtering: ", patches.shape)
-        self.patch_size = (1,patches.shape[2],patches.shape[3])
+        self.patch_size = (1, patches.shape[2], patches.shape[3])
         num_patches = patches.shape[0]
         indices = torch.arange(num_patches)
         keep_mask = (patches > 0.05).float().mean(dim=(1, 2, 3)) > self.foreground_threshold
@@ -198,8 +215,8 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         # grid_H = max((x.shape[2] - self.patch_size[1]) // self.stride[1] + 1, 1)
         # grid_W = max((x.shape[3] - self.patch_size[2]) // self.stride[2] + 1, 1)
         # print(grid_D, grid_H, grid_W)
-        grid_H = self.grid[0]
-        grid_W = self.grid[1]
-        grid_D = d
-        return patches, y, (case_id, new_spacings, path, nth_slice), (
-            grid_H, grid_W, grid_D), filtered_indices, num_patches
+
+        # grid_H = self.grid[0]
+        # grid_W = self.grid[1]
+        # grid_D = d
+        return patches, y, (case_id, new_spacings, path, nth_slice), filtered_indices, num_patches, patch_centers

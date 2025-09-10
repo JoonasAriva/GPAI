@@ -19,7 +19,7 @@ from data.kidney_dataloader import KidneyDataloader, AbdomenAtlasLoader
 from data.patch3d_dataloader import KidneyDataloader3D
 from data.synth_dataloaders import SynthDataloader
 from depth_trainer import TrainerDepth, DepthLossV2, CompassLoss
-from depth_trainer2Dpatches import Trainer2DPatchDepth, DepthLoss2DPatches
+from depth_trainer2Dpatches import Trainer2DPatchDepth, DepthLossSamplePatches
 from depth_trainer3D import Trainer3DDepth, DepthLoss3D
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
     ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention, \
@@ -62,7 +62,7 @@ def prepare_dataloader(cfg: DictConfig):
                                              **dataloader_params, random_experiment=cfg.data.random_experiment)
             test_dataset = KidneyDataloader(type="test", **dataloader_params)
 
-        loader_kwargs = {'num_workers': 1 if cfg.check else 4, 'pin_memory': True} if torch.cuda.is_available() else {}
+        loader_kwargs = {'num_workers': 1 if cfg.check else 3, 'pin_memory': True} if torch.cuda.is_available() else {}
 
         # create sampler for training set
         class_sample_count = [train_dataset.controls, train_dataset.cases]
@@ -226,7 +226,7 @@ def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch, adv_optimizer=None):
                                             steps_in_epoch=steps_in_epoch,
                                             progressive_sigmoid_scaling=cfg.model.progressive_sigmoid_scaling)
     elif cfg.experiment == "patches2D_depth":
-        loss_function = DepthLoss2DPatches(step=0.5).cuda()
+        loss_function = DepthLossSamplePatches().cuda()
         trainer = Trainer2DPatchDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                                       steps_in_epoch=steps_in_epoch)
     else:
