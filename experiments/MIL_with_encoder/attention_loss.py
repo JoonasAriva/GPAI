@@ -52,6 +52,65 @@ class AttentionLoss(DepthLossV2):
 
         return loss_matrix.sum() / (len(attention) ** 2)  # + diag_loss
 
+
+class AttentionLossPatches2D(DepthLossV2):
+    def __init__(self, step):
+        super().__init__(step)
+
+    def calc_manhattan_distances_in_3d(self, matrix):
+        return matrix.reshape(-1, 1, 3) - matrix.float()
+
+    def forward(self, attention, real_coordinates, verbose=False):
+        voxel_spacing = torch.tensor([2.0, 0.84, 0.84])
+        scaled_coordinates = real_coordinates * voxel_spacing
+
+        real_distances = self.calc_manhattan_distances_in_3d(scaled_coordinates).float().cuda()
+
+        dist_norm = torch.norm(real_distances, dim=2)
+
+        acceptable_distance = 150
+        mercy_value = acceptable_distance * self.step
+        mod_step_matrix = torch.maximum(dist_norm - mercy_value,
+                                        torch.zeros_like(dist_norm).cuda(non_blocking=True))
+
+        attention_matrix = attention * attention.reshape(-1, 1)
+        loss_matrix = torch.tril(mod_step_matrix * attention_matrix)
+
+        if verbose:
+            for i in range(3):
+
+                sorted_idx = torch.argsort(scaled_coordinates[0, :, i], dim=0)
+                sorted_coordinates = scaled_coordinates[:,sorted_idx]
+                sorted_attention = attention[sorted_idx]
+
+                real_distances = self.calc_manhattan_distances_in_3d(sorted_coordinates).float().cuda()
+
+                dist_norm = torch.norm(real_distances, dim=2)
+
+                acceptable_distance = 150
+                mercy_value = acceptable_distance * self.step
+                mod_step_matrix = torch.maximum(dist_norm - mercy_value,
+                                                torch.zeros_like(dist_norm).cuda(non_blocking=True))
+
+                attention_matrix = sorted_attention * sorted_attention.reshape(-1, 1)
+                loss_matrix = torch.tril(mod_step_matrix * attention_matrix)
+
+                fig, axs = plt.subplots(1, 4, figsize=(24, 8))
+                axs[0].imshow(dist_norm.cpu())
+                axs[0].set_title("step matrix")
+
+                axs[1].imshow(mod_step_matrix.cpu())
+                axs[1].set_title("step matrix with mercy")
+
+                axs[2].imshow(attention_matrix.cpu())
+                axs[2].set_title("attention matrix")
+
+                axs[3].imshow(loss_matrix.cpu())
+                axs[3].set_title("loss_matrix")
+                plt.show()
+
+        return loss_matrix.sum() / (len(attention) ** 2)  # + diag_loss
+
 # class ClassAttentionLoss(nn.Module):
 #     def __init__(self, step):
 #         super().__init__()

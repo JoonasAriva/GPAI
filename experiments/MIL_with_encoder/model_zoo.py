@@ -111,32 +111,18 @@ class ResNetAttentionV3(nn.Module):
         H = self.backbone(x[:scan_end])
         H = self.adaptive_pooling(H)
         H = H.view(-1, 512 * 1 * 1)
-        # H = H[:scan_end]
-        if self.neighbour_range != 0:
-            combinedH = H.view(-1)
-            combinedH = F.pad(combinedH, (self.L * self.neighbour_range, self.L * self.neighbour_range), "constant",
-                              0)  # TODO: mirror padding?
-            combinedH = combinedH.unfold(0, self.L * (self.neighbour_range * 2 + 1), self.L)
-
-            H = 0.25 * combinedH[:, :self.L] + 0.5 * combinedH[:, self.L:2 * self.L] + 0.25 * combinedH[:, 2 * self.L:]
 
         attention_maps = [head(H) for head in self.attention_heads]
         attention_maps = torch.cat(attention_maps, dim=1)
 
-        unnorm_A = torch.mean(attention_maps, dim=1)
-        unnorm_A = unnorm_A.view(1, -1)
+        unnorm_A = attention_maps.view(self.num_attention_heads, -1)
 
         A = F.softmax(unnorm_A, dim=1)
-        # A = unnorm_A / (torch.sum(unnorm_A) + 0.01)
 
-        if cam:
-            Y_probs = self.classifier(H)
-            out['scores'] = Y_probs
-            out['attention_weights'] = unnorm_A
-            return out
+        A = torch.mean(A, dim=0).view(1,-1)
 
         M = torch.mm(A, H)
-        # print("M", M.shape)
+
         Y_prob = self.classifier(M)
         Y_hat = self.sig(Y_prob)
         Y_hat = torch.ge(Y_hat, 0.5).float()
@@ -145,6 +131,8 @@ class ResNetAttentionV3(nn.Module):
         out['scores'] = Y_prob
         out['attention_weights'] = A
         out['unnorm_A'] = unnorm_A
+        if self.num_attention_heads > 1:
+            out["all_attention"] = F.softmax(attention_maps, dim=0)
         return out  # Y_prob, Y_hat, unnorm_A
 
 
@@ -235,20 +223,20 @@ class ResNetSelfAttention(nn.Module):
         self.backbone = nn.Sequential(*modules)
 
         self.self_attention = SelfAttention(embed_dim=512, num_heads=1)
-        #self.cls_token = nn.Parameter(torch.zeros(1, 512))
-        #torch.nn.init.trunc_normal_(self.cls_token)
+        # self.cls_token = nn.Parameter(torch.zeros(1, 512))
+        # torch.nn.init.trunc_normal_(self.cls_token)
 
-    def forward(self, x, scan_end,include_weights=False, **kwargs):
+    def forward(self, x, scan_end, include_weights=False, **kwargs):
         out = dict()
         H = self.backbone(x[:scan_end])
         H = self.adaptive_pooling(H)
         H = H.view(-1, 512 * 1 * 1)
 
-        #H = torch.concat((self.cls_token, H), dim=0)
+        # H = torch.concat((self.cls_token, H), dim=0)
 
         H2, weights = self.self_attention(H)
 
-        #CLS = torch.unsqueeze(H[0, :], dim=0)
+        # CLS = torch.unsqueeze(H[0, :], dim=0)
 
         attention_maps = [head(H2) for head in self.attention_heads]
         attention_maps = torch.cat(attention_maps, dim=1)

@@ -15,12 +15,13 @@ sys.path.append('/users/arivajoo/GPAI')
 from misc_utils import get_percentage_of_scans_from_dataframe
 from data.data_utils import get_source_label, map_source_label
 from depth_trainer import DepthLossV2
-from attention_loss import AttentionLoss
+from attention_loss import AttentionLossPatches2D
 from multi_gpu_utils import print_multi_gpu
 
 DEPTH_loss = DepthLossV2(step=0.05).cuda()
 DANN_loss = nn.CrossEntropyLoss().cuda()
-ATTENTION_loss = AttentionLoss(step=1).cuda()
+# ATTENTION_loss = AttentionLoss(step=1).cuda()
+ATTENTION_loss = AttentionLossPatches2D(step=1).cuda()
 
 
 def calculate_classification_error(Y, Y_hat):
@@ -90,6 +91,7 @@ class Trainer:
         domain_loss = 0.
         attn_loss = 0.
         depth_loss = 0.
+        difference_loss = 0.
         step = 0
         nr_of_batches = len(data_loader)
 
@@ -119,7 +121,8 @@ class Trainer:
         attention_scores["cases"] = [[], []]
         attention_scores["controls"] = [[], []]
         time_data = time.time()
-        for data, bag_label, meta in tepoch:
+        for data, bag_label, meta, filtered_indices, num_patches, patch_centers in tepoch:
+            # was just: data, bag_label, meta before 2d patch sampling
 
             if self.check:
                 print("data shape: ", data.shape, flush=True)
@@ -130,7 +133,9 @@ class Trainer:
             tepoch.set_description(f"Epoch {epoch}")
             step += 1
 
-            data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))  # if training a swin model, disable this line
+            # next line disabled for 2d patch model
+            # data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))  # if training a swin model, disable this line
+            data = torch.squeeze(data)
 
             # data = data.to(self.device, dtype=torch.float16, non_blocking=True)
             data = data.cuda(non_blocking=True).to(dtype=torch.float16)
@@ -138,9 +143,9 @@ class Trainer:
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
 
-                path = meta[4][0]
+                path = meta[2][0]  # was 4 before (4-->2)
                 source_label = get_source_label(path)
-                out = model.forward(data, label=bag_label, scan_end=meta[3], source_label=source_label)
+                out = model.forward(data, label=bag_label, scan_end=num_patches, source_label=source_label)
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
@@ -169,10 +174,20 @@ class Trainer:
                     depth_loss += d_loss.item()
                     total_loss = total_loss + d_loss
                 if self.attention:
-                    attention_scores = out['attention_weights'].flatten()
-                    attn_loss = ATTENTION_loss(attention_scores, z_spacing=meta[2][2],
-                                               nth_slice=meta[1]).item()
-                    total_loss = total_loss + attn_loss
+                    # attention_scores = out['attention_weights'].flatten()
+                    # attn_loss = ATTENTION_loss(attention_scores, z_spacing=meta[2][2],
+                    #                           nth_slice=meta[1]).item()
+                    a_loss = 0
+                    diff_loss = 0
+                    attention_scores = out['all_attention']
+                    for i in range(2):
+                        head_attention = attention_scores[:, i].flatten()
+                        a_loss += 0.5 * ATTENTION_loss(head_attention, patch_centers).item()
+                    # diff_loss = -torch.norm(torch.abs(attention_scores[:, 0] - attention_scores[:, 1]))
+                    total_loss = total_loss + a_loss  # + 0.01 * diff_loss
+
+                    attn_loss += a_loss
+                    difference_loss += diff_loss
 
                 total_loss /= self.update_freq
 
@@ -223,6 +238,7 @@ class Trainer:
         domain_loss /= nr_of_batches
         depth_loss /= nr_of_batches
         attn_loss /= nr_of_batches
+        difference_loss /= nr_of_batches
 
         outputs = np.concatenate(outputs)
         targets = np.concatenate(targets)
@@ -258,5 +274,6 @@ class Trainer:
         results["domain_loss"] = domain_loss
         results["depth_loss"] = depth_loss
         results["attention_loss"] = attn_loss
+        results["difference_loss"] = difference_loss
 
         return results

@@ -3,6 +3,7 @@ from __future__ import print_function
 import logging
 import os
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import hydra
@@ -38,7 +39,7 @@ torch.backends.cudnn.benchmark = True
 @hydra.main(config_path="config", config_name="config_MIL", version_base='1.1')
 def main(cfg: DictConfig):
     if cfg.training.multi_gpu:
-        init_process_group(backend="nccl")
+        init_process_group(backend="nccl", timeout=timedelta(seconds=3600))
         local_rank = int(os.environ['LOCAL_RANK'])
     else:
         local_rank = 0
@@ -84,8 +85,13 @@ def main(cfg: DictConfig):
     model = pick_model(cfg)
 
     if cfg.model.pretrained:
+        # for 2d slice attention model
+        # sd = torch.load(
+        #     '/users/arivajoo/results/depth/train/resnetdepth/kidney_real/2025-07-14/11-17-49/checkpoints/best_model.pth',
+        #     map_location='cuda:0')
+        # for 2d patch version
         sd = torch.load(
-            '/users/arivajoo/results/depth/train/resnetdepth/kidney_real/2025-07-14/11-17-49/checkpoints/best_model.pth',
+            '/users/arivajoo/results/patches2D_depth/train/depth_patches2D/kidney_real/2025-09-17/14-50-05/checkpoints/best_model.pth',
             map_location='cuda:0')
         new_sd = {key.replace("module.", ""): value for key, value in sd.items()}
         model.load_state_dict(state_dict=new_sd, strict=False)
@@ -95,8 +101,9 @@ def main(cfg: DictConfig):
     resume_run = False
     if "checkpoint" in cfg.keys():
         print("Using checkpoint", cfg.checkpoint)
-        model.load_state_dict(
-            torch.load(os.path.join(cfg.checkpoint, 'current_model.pth')))
+        sd = torch.load(os.path.join(cfg.checkpoint, 'best_model.pth'), map_location='cuda:0')
+        new_sd = {key.replace("module.", ""): value for key, value in sd.items()}
+        model.load_state_dict(state_dict=new_sd)
         resume_run = True
 
     if cfg.training.multi_gpu == True:
@@ -106,7 +113,7 @@ def main(cfg: DictConfig):
         model = DDP(  # <- We need to wrap the model with DDP
             model,
             device_ids=[local_rank],  # <- and specify the device_ids/output_device
-            find_unused_parameters=False #was True before
+            find_unused_parameters=False  # was True before
         )
     else:
         if torch.cuda.is_available():
@@ -189,6 +196,9 @@ def main(cfg: DictConfig):
                 break
             not_improved_epochs += 1
 
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()  # all ranks sync here
+
         if local_rank == 0:
             logging.info("Logging results to wandb")
             experiment.log(epoch_results)
@@ -196,6 +206,9 @@ def main(cfg: DictConfig):
             torch.save(model.module.state_dict(), str(dir_checkpoint / 'current_model.pth'))
             torch.save(optimizer.state_dict(), str(dir_checkpoint / 'current_optimizer.pth'))
             torch.save(scheduler.state_dict(), str(dir_checkpoint / 'current_scheduler.pth'))
+
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()  # wait until save finished
 
     if local_rank == 0:
         torch.save(model.state_dict(), str(dir_checkpoint / 'last_model.pth'))

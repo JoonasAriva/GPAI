@@ -1,5 +1,6 @@
 import torch.nn as nn
 from monai.networks.nets import resnet
+from monai.networks.nets import resnet18
 from torchvision.models import resnet34, ResNet34_Weights, resnet
 
 from model_zoo import MyGroupNorm
@@ -9,11 +10,7 @@ class ResNet3DDepth(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.model = resnet.resnet18(
-            spatial_dims=3,  # 3D convolutions
-            n_input_channels=1,  # CT scan has 1 channel
-            num_classes=2  # temporarily set for classification
-        )
+        self.model = resnet18(pretrained=False, spatial_dims=3, n_input_channels=1, num_classes=3)
 
         # --- 2. Strip off the final classifier to get feature vectors ---
         # The final layer is model.fc

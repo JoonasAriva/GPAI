@@ -94,28 +94,34 @@ class DepthLossSamplePatches(nn.Module):
     def calc_manhattan_distances_in_3d(self, matrix):
         return matrix.reshape(-1, 1, 3) - matrix.float()
 
-    def forward(self, predictions, real_coordinates, filtered_indices):
-        steps = self.calc_manhattan_distances_in_3d(real_coordinates).float().cuda()
+    def forward(self, predictions, real_coordinates):
+        voxel_spacing = torch.tensor([2.0, 0.84, 0.84])
+        scaled_coordinates = real_coordinates * voxel_spacing
+        steps = self.calc_manhattan_distances_in_3d(scaled_coordinates).float().cuda()
+
         # multiply indexing tensor with reordered 3d spacings
 
         # calculate the manhattan distances for predictions and index matrix
         pred_distance_matrix = self.calc_manhattan_distances_in_3d(predictions)
+        for i in range(3):
+            steps[:, :, i] = torch.tril(steps[:, :, i])
+            pred_distance_matrix[:, :, i] = torch.tril(pred_distance_matrix[:, :, i])
 
-        idxs = pred_distance_matrix >= 0
+        pred_distance_norm = torch.norm(pred_distance_matrix, dim=2)
+        steps_norm = torch.norm(steps, dim=2)
 
-        pred_distance_matrix[idxs] = pred_distance_matrix[idxs] - torch.abs(steps[idxs])
-
-        # do not generate loss from distances to patches, which have been filtered out
-        # filtered indices - indices we want to keep, real patches
-        pred_distance_matrix[~filtered_indices, :, :] = 0
-        pred_distance_matrix[:, ~filtered_indices, :] = 0
-
-        pred_distance_matrix[~idxs] = 0
+        # THE DECOUPLED PART
+        pred_distance_matrix = pred_distance_matrix - steps
 
         losses = [pred_distance_matrix[:, :, i].abs().sum(dim=(0, 1)) / (len(pred_distance_matrix) ** 2) for i in
                   range(3)]
 
-        return losses  # order:  y_loss, x_loss, z_loss
+        # THE COUPLED PART
+        pred_distance_norm = pred_distance_norm - steps_norm
+
+        norm_loss = pred_distance_norm.abs().sum() / (len(pred_distance_matrix) ** 2)
+
+        return losses, norm_loss  # order:  y_loss, x_loss, z_loss # really should be z,y,x
 
 
 class Trainer2DPatchDepth:
@@ -134,6 +140,7 @@ class Trainer2DPatchDepth:
         self.update_freq = cfg.training.weight_update_freq
         self.slice_level_supervision = cfg.data.slice_level_supervision
         self.scaler = torch.cuda.amp.GradScaler()
+        self.model_type = cfg.model.model_type
         if cfg.data.no_lungs:
             path = '/scratch/project_465001111/ct_data/kidney/slice_statistics.csv'
             self.statistics = pd.read_csv(path)
@@ -165,6 +172,7 @@ class Trainer2DPatchDepth:
         d_loss = 0.
         h_loss = 0.
         w_loss = 0.
+        dist_loss = 0.
         step = 0
         nr_of_batches = len(data_loader)
 
@@ -194,31 +202,39 @@ class Trainer2DPatchDepth:
             step += 1
             gc.collect()
 
+            if self.model_type == '3D':
+                data = torch.permute(data, (1, 0, 2, 3, 4))
+            else:
+                data = torch.squeeze(data)
+
             if self.check:
                 print("data shape: ", data.shape, flush=True)
 
-            data = torch.squeeze(data)
+                print("patches_cpu dtype:", data.dtype)
+                print("patches_cpu shape:", data.shape)
+                print("patches_cpu is_contiguous:", data.is_contiguous())
+                print("patches_cpu requires_grad:", data.requires_grad)
+
             data = data.to(self.device, dtype=torch.float16, non_blocking=True)
 
             time_forward = time.time()
             grad_ctx = torch.no_grad() if not train else nullcontext()
             with torch.cuda.amp.autocast(), grad_ctx:
                 features = model.forward(data)
-                F = features.shape[1]
-                full_features = torch.zeros(num_patches, F, device=features.device, dtype=features.dtype)
-                full_features[filtered_indices] = features
+                # F = features.shape[1]
+                # full_features = torch.zeros(num_patches, F, device=features.device, dtype=features.dtype)
+                # full_features[filtered_indices] = features
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
                 time_loss = time.time()
 
-                hloss, wloss, dloss = self.loss_function(full_features, patch_centers,
-                                                         filtered_indices=filtered_indices)
+                (dloss, hloss, wloss), norm_loss = self.loss_function(features, patch_centers)
 
                 loss_time = time.time() - time_loss
                 loss_times.append(loss_time)
-                depth_loss = (dloss + hloss + wloss) / self.update_freq
+                depth_loss = (dloss + hloss + wloss + norm_loss) / self.update_freq
 
             if train:
                 time_backprop = time.time()
@@ -238,6 +254,7 @@ class Trainer2DPatchDepth:
             d_loss += dloss.item()
             w_loss += wloss.item()
             h_loss += hloss.item()
+            dist_loss += norm_loss.item()
 
             if step >= 6 and self.check:
                 break
@@ -253,6 +270,7 @@ class Trainer2DPatchDepth:
         d_loss /= nr_of_batches
         h_loss /= nr_of_batches
         w_loss /= nr_of_batches
+        dist_loss /= nr_of_batches
 
         print_multi_gpu(
             f"data speed: {round(np.mean(data_times), 3)}, forward speed ,{round(np.mean(forward_times), 3)},backprop speed: , {round(np.mean(backprop_times), 3)}",
@@ -267,13 +285,14 @@ class Trainer2DPatchDepth:
         results["d_loss"] = d_loss
         results["h_loss"] = h_loss
         results["w_loss"] = w_loss
+        results["dist_loss"] = dist_loss
 
         print_multi_gpu(f"END EPOCH {epoch}: allocated MB:{torch.cuda.memory_allocated() / 1024 ** 2}",
                         local_rank)
         print_multi_gpu(f"END EPOCH {epoch}: reserved  MB:{torch.cuda.memory_reserved() / 1024 ** 2}",
                         local_rank)
 
-        del data, features, full_features, hloss, wloss, dloss, depth_loss
+        # del data, features, hloss, wloss, dloss, depth_loss, dist_loss
         torch.cuda.empty_cache()
         gc.collect()
 

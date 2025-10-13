@@ -26,7 +26,7 @@ from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerP
     MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2, ResNetDepth, TransDepth, CompassModel, \
     CompassModelV2, TwoStageCompass, TwoStageCompassV2, TwoStageCompassV3, TwoStageCompassV4, TwoStageCompassV5, \
     TwoStageCompassV6, DepthTumor
-from models3d import ResNetDepth2dPatches
+from models3d import ResNetDepth2dPatches, ResNet3DDepth
 from rel_models import ResNetRel
 from swin_models import SWINCompass, SWINClassifier
 from trainer import Trainer
@@ -48,7 +48,7 @@ def prepare_dataloader(cfg: DictConfig):
             'roll_slices': cfg.data.roll_slices, 'model_type': cfg.model.model_type,
             'generate_spheres': True if cfg.data.dataloader == 'kidney_synth' else False, 'patchify': cfg.data.patchify,
             'no_lungs': cfg.data.no_lungs, "pasted_experiment": pasted_experiment, 'TUH_only': cfg.data.TUH_only,
-            'compass_filtering': cfg.data.compass_filter}
+            'compass_filtering': cfg.data.compass_filter, "nr_of_patches": cfg.data.nr_of_patches}
 
         if cfg.data.patchify:
             train_dataset = KidneyDataloader3D(type="train",
@@ -62,7 +62,7 @@ def prepare_dataloader(cfg: DictConfig):
                                              **dataloader_params, random_experiment=cfg.data.random_experiment)
             test_dataset = KidneyDataloader(type="test", **dataloader_params)
 
-        loader_kwargs = {'num_workers': 1 if cfg.check else 3, 'pin_memory': True} if torch.cuda.is_available() else {}
+        loader_kwargs = {'num_workers': 1 if cfg.check else 4, 'pin_memory': True} if torch.cuda.is_available() else {}
 
         # create sampler for training set
         class_sample_count = [train_dataset.controls, train_dataset.cases]
@@ -191,7 +191,8 @@ def pick_model(cfg: DictConfig):
         model = ResNetRel(instnorm=cfg.model.inst_norm, ghostnorm=cfg.model.ghostnorm)
     elif cfg.model.name == 'depth_patches2D':
         model = ResNetDepth2dPatches()
-
+    elif cfg.model.name == 'depth_patches3D':
+        model = ResNet3DDepth()
     return model
 
 
@@ -225,7 +226,7 @@ def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch, adv_optimizer=None):
                                             cfg=cfg,
                                             steps_in_epoch=steps_in_epoch,
                                             progressive_sigmoid_scaling=cfg.model.progressive_sigmoid_scaling)
-    elif cfg.experiment == "patches2D_depth":
+    elif cfg.experiment == "patches2D_depth" or cfg.experiment == "patches3D_depth":
         loss_function = DepthLossSamplePatches().cuda()
         trainer = Trainer2DPatchDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                                       steps_in_epoch=steps_in_epoch)

@@ -2,7 +2,7 @@ hydra:
   run:
     dir: results/${experiment}/${hydra.job.name}/${model.name}/${data.dataloader}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-experiment: patches2D_depth
+experiment: Attention
 
 training:
   epochs: 70
@@ -14,14 +14,14 @@ training:
 
 model:
   classes: 1
-  name: 'depth_patches2D'
+  name: 'resnet34V3'
   model_type: '2D'
   pretrained_imagenet: True
   neighbour_range: 0
-  num_heads: 1
+  num_heads: 2
   inst_norm: True
   ghostnorm: False
-  pretrained: False
+  pretrained: True
   relevancy_head: False
   progressive_sigmoid_scaling: True
 
@@ -39,6 +39,7 @@ data:
   important_slices_only: False
   no_lungs: False
   patchify: True
+  nr_of_patches: 200
   slice_level_supervision: 0
   random_experiment: False
 check: False

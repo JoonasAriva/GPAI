@@ -1,8 +1,8 @@
 import sys
+import time
 
 import nibabel as nib
 import numpy as np
-import torch
 import torch.nn.functional as F
 from monai.transforms import *
 
@@ -10,6 +10,87 @@ sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
 sys.path.append('/users/arivajoo/GPAI/data')
 from data_utils import get_kidney_datasets, set_orientation_nib, \
     get_pasted_small_dateset, normalize_scan_new, CompassFilter, remove_table_3d
+
+import torch
+
+
+def extract_patches_3d(x: torch.Tensor, patch_centers, patch_size):
+    """
+    Efficient 3D patch extraction without advanced indexing broadcast.
+
+    Args:
+        x: Tensor of shape (C, D, H, W)
+        patch_centers: (N, 3) numpy array or torch.Tensor with (d, h, w) centers
+        patch_size: tuple of (pd, ph, pw)
+
+    Returns:
+        patches: Tensor of shape (N, C, pd, ph, pw)
+    """
+    patch_centers = torch.as_tensor(patch_centers, dtype=torch.long)
+
+    C, D, H, W = x.shape
+    pd, ph, pw = patch_size
+    N = patch_centers.shape[0]
+
+    patches = []
+    for d, h, w in patch_centers:
+        d0, h0, w0 = d - pd // 2, h - ph // 2, w - pw // 2
+        d1, h1, w1 = d0 + pd, h0 + ph, w0 + pw
+        # boundary check
+        if d0 < 0 or h0 < 0 or w0 < 0 or d1 > D or h1 > H or w1 > W:
+            raise ValueError(f"Invalid center {(d, h, w)} for patch size {patch_size} in volume {x.shape}")
+
+        patch = x[:, d0:d1, h0:h1, w0:w1]
+        patches.append(patch)
+    patches = torch.stack(patches, dim=0)  # (N, C, pd, ph, pw)
+
+    return patches
+
+
+# def extract_patches_3d(x: torch.Tensor, patch_centers, patch_size):
+#     """
+#     Fully vectorized 3D patch extraction.
+#
+#     Args:
+#         x: Tensor of shape (C, D, H, W)
+#         patch_centers: (N, 3) numpy array or torch.Tensor with (d, h, w) centers
+#         patch_size: tuple of (pd, ph, pw)
+#
+#     Returns:
+#         patches: Tensor of shape (N, C, pd, ph, pw)
+#     """
+#
+#     patch_centers = torch.as_tensor(patch_centers, dtype=torch.long)
+#
+#     C, D, H, W = x.shape
+#     N = patch_centers.shape[0]
+#     pd, ph, pw = patch_size
+#
+#     # compute start indices for each patch
+#     d_start = patch_centers[:, 0] - pd // 2
+#     h_start = patch_centers[:, 1] - ph // 2
+#     w_start = patch_centers[:, 2] - pw // 2
+#
+#     assert (d_start >= 0).all() and (h_start >= 0).all() and (w_start >= 0).all(), "Patch starts < 0"
+#     assert (d_start + pd <= D).all() and (h_start + ph <= H).all() and (w_start + pw <= W).all(), \
+#         "Patch exceeds scan bounds"
+#
+#     # build index grids
+#     d_idx = d_start[:, None, None, None] + torch.arange(pd).view(1, pd, 1, 1)
+#     h_idx = h_start[:, None, None, None] + torch.arange(ph).view(1, 1, ph, 1)
+#     w_idx = w_start[:, None, None, None] + torch.arange(pw).view(1, 1, 1, pw)
+#
+#     # expand to match patch shape
+#     d_idx = d_idx.expand(N, pd, ph, pw)
+#     h_idx = h_idx.expand(N, pd, ph, pw)
+#     w_idx = w_idx.expand(N, pd, ph, pw)
+#
+#     # gather patches
+#     patches = x[:, d_idx, h_idx, w_idx]  # x is (C,D,H,W)
+#     # output shape: (C, N, pd, ph, pw) -> permute to (N, C, pd, ph, pw)
+#     patches = patches.permute(1, 0, 2, 3, 4).contiguous()
+#
+#     return patches
 
 
 def threshold_f(x):
@@ -36,15 +117,14 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
                  center_crop: int = 120, no_lungs: bool = False,
                  pasted_experiment: bool = False,
                  TUH_only: bool = False,
-                 compass_filtering: bool = False, rgb: bool = True, roll_slices: bool = True,
-                 patch_size: tuple = (1, 200, 200), **kwargs):
+                 compass_filtering: bool = False, model_type: str = '3D',
+                 patch_size: tuple = (1, 200, 200), nr_of_patches: int = 100, **kwargs):
         super().__init__()
         self.augmentations = augmentations
         self.nth_slice = nth_slice
         self.plane = plane
-        self.as_rgb = rgb
-        self.roll_slices = roll_slices
         self.type = type
+        self.kind = model_type
         self.patch_size = patch_size
         self.compass_filtering = compass_filtering
         if compass_filtering:
@@ -86,6 +166,7 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))
         self.air_cropper = CropForeground(select_fn=threshold_f, margin=0, allow_smaller=False)
         self.exact_path = None
+        self.nr_of_patches = nr_of_patches
 
     def pick_sample_frequency(self, nr_of_original_slices: int, nth_slice: int):
 
@@ -136,9 +217,11 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         new_spacings = (0.84, 0.84, 2)
         x = resize_array(x, spacings, new_spacings)
         # print("after adjusting spacings: ", x.shape)
-        nth_slice = self.pick_sample_frequency(nr_of_original_slices, self.nth_slice)
 
-        x = x[:, :, ::nth_slice]  # sample slices
+        # nth_slice = self.pick_sample_frequency(nr_of_original_slices, self.nth_slice)
+
+        # x = x[:, :, ::nth_slice]  # sample slices
+
         x = np.expand_dims(x, 0)  # needed for cropper
         x = self.center_cropper(x).as_tensor()
         x = np.squeeze(x)
@@ -155,68 +238,53 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         x = remove_table_3d(x)
         shape_after_table = x.shape
         x = self.air_cropper(x)
-        # print("after cropping table and air: ", x.shape)
 
-        if self.as_rgb:  # if we need 3 channel input
-            if self.roll_slices:
+        if self.kind == '2D':
 
-                roll_forward = np.roll(x, 1, axis=(2))
-                # mirror the first slice
-                # roll_forward[:, :, 0] = roll_forward[:, :, 1]
-                roll_back = np.roll(x, -1, axis=(2))
-                # mirror the first slice
-                # roll_back[:, :, -1] = roll_back[:, :, -2]
-                x = np.stack((roll_back, x, roll_forward), axis=0)
-                x = x[:, :, :, 1:-1]
-            else:
-                x = np.concatenate((x, x, x), axis=0)
+            roll_forward = np.roll(x, 1, axis=(2))
+            # mirror the first slice
+            # roll_forward[:, :, 0] = roll_forward[:, :, 1]
+            roll_back = np.roll(x, -1, axis=(2))
+            # mirror the first slice
+            # roll_back[:, :, -1] = roll_back[:, :, -2]
+            x = np.stack((roll_back, x, roll_forward), axis=0)
+            x = x[:, :, :, 1:-1]
+
+        else:  # 3d patches
+            x = np.expand_dims(x, 0)
+
+        x = np.transpose(x, (0, 3, 1, 2))  # C, D, H, W
 
         x = normalize_scan_new(x)
 
-        x = np.transpose(x, (0, 3, 1, 2))  # C, D, H, W
-        d = x.shape[1]
-
         D, H, W = x.shape[1:]
         edge_buffer = 75
-        N = 100
-        patch_centers = np.random.uniform(np.array([0, edge_buffer, edge_buffer]),
-                                          np.array([D, H - edge_buffer, W - edge_buffer]), size=np.array([N, 3]))
+        if self.kind == "2D":
+            depth_buffer = 1
+            patch_size = (1, 150, 150)
+        else:
+            depth_buffer = 35
+            patch_size = (65, 150, 150)
 
-        patch_size = (1, 150, 150)
+        patch_centers = np.random.uniform(np.array([depth_buffer, edge_buffer, edge_buffer]),
+                                          np.array([D - depth_buffer, H - edge_buffer, W - edge_buffer]),
+                                          size=np.array([self.nr_of_patches, 3]))
+        patch_centers = np.round(patch_centers).astype(int)
 
-        patches = []
-        for center in patch_centers:
-            cropper = SpatialCrop(roi_center=center, roi_size=patch_size)
-            patch = cropper(x)  # (C,64,64)
-            patches.append(patch)
+        x_tensor = torch.as_tensor(x, dtype=torch.float32)
+        start = time.time()
+        patches = extract_patches_3d(x_tensor, patch_centers, patch_size)
+        #print("Extraction took", time.time() - start)
+        patches = torch.squeeze(patches)
 
-        patches = torch.squeeze(torch.stack(patches))
-
-        # patches = torch.as_tensor(self.extract_patches(x))
-
-        # print("all patches: ", patches.shape)
-        # print("before filtering: ", patches.shape)
-        self.patch_size = (1, patches.shape[2], patches.shape[3])
         num_patches = patches.shape[0]
         indices = torch.arange(num_patches)
         keep_mask = (patches > 0.05).float().mean(dim=(1, 2, 3)) > self.foreground_threshold
         patches = patches[keep_mask]
+        patch_centers = patch_centers[keep_mask]
         filtered_indices = indices[keep_mask]
-        # print("after filtering: ", patches.shape)
-        # print("after filtering: ", patches.shape)
-        # Stack patches into (N, C, D, H, W)
 
         if self.augmentations is not None:
             x = self.augmentations(x)
 
-        # 5. Compute grid dims
-        # print("x shape: ",x.shape)
-        # grid_D = (x.shape[1] - self.patch_size[0]) // self.stride[0] + 1
-        # grid_H = max((x.shape[2] - self.patch_size[1]) // self.stride[1] + 1, 1)
-        # grid_W = max((x.shape[3] - self.patch_size[2]) // self.stride[2] + 1, 1)
-        # print(grid_D, grid_H, grid_W)
-
-        # grid_H = self.grid[0]
-        # grid_W = self.grid[1]
-        # grid_D = d
-        return patches, y, (case_id, new_spacings, path, nth_slice), filtered_indices, num_patches, patch_centers
+        return patches, y, (case_id, new_spacings, path, x), filtered_indices, num_patches, patch_centers
