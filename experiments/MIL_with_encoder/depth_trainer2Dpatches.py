@@ -13,6 +13,9 @@ sys.path.append('/users/arivajoo/GPAI')
 from misc_utils import get_percentage_of_scans_from_dataframe
 import torch.nn as nn
 from multi_gpu_utils import print_multi_gpu
+from attention_loss import AttentionLossPatches2D
+
+ATTENTION_loss = AttentionLossPatches2D(step=1).cuda()
 
 
 class DepthLoss2DPatches(nn.Module):
@@ -125,7 +128,8 @@ class DepthLossSamplePatches(nn.Module):
 
 
 class Trainer2DPatchDepth:
-    def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None):
+    def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None,
+                 attention_exp: bool = False):
 
         self.check = cfg.check
         self.device = torch.device("cuda")
@@ -141,6 +145,7 @@ class Trainer2DPatchDepth:
         self.slice_level_supervision = cfg.data.slice_level_supervision
         self.scaler = torch.cuda.amp.GradScaler()
         self.model_type = cfg.model.model_type
+        self.attention_exp = attention_exp
         if cfg.data.no_lungs:
             path = '/scratch/project_465001111/ct_data/kidney/slice_statistics.csv'
             self.statistics = pd.read_csv(path)
@@ -173,6 +178,7 @@ class Trainer2DPatchDepth:
         h_loss = 0.
         w_loss = 0.
         dist_loss = 0.
+        att_loss = 0.
         step = 0
         nr_of_batches = len(data_loader)
 
@@ -220,10 +226,8 @@ class Trainer2DPatchDepth:
             time_forward = time.time()
             grad_ctx = torch.no_grad() if not train else nullcontext()
             with torch.cuda.amp.autocast(), grad_ctx:
-                features = model.forward(data)
-                # F = features.shape[1]
-                # full_features = torch.zeros(num_patches, F, device=features.device, dtype=features.dtype)
-                # full_features[filtered_indices] = features
+                features, att_head_weights = model.forward(data)
+
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
@@ -235,6 +239,11 @@ class Trainer2DPatchDepth:
                 loss_time = time.time() - time_loss
                 loss_times.append(loss_time)
                 depth_loss = (dloss + hloss + wloss + norm_loss) / self.update_freq
+
+                if self.attention_exp:
+                    aloss = 0
+                    for i in range(att_head_weights.shape[1]):
+                    aloss = ATTENTION_loss()
 
             if train:
                 time_backprop = time.time()

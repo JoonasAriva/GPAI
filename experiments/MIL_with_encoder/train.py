@@ -113,7 +113,7 @@ def main(cfg: DictConfig):
         model = DDP(  # <- We need to wrap the model with DDP
             model,
             device_ids=[local_rank],  # <- and specify the device_ids/output_device
-            find_unused_parameters=False  # was True before
+            find_unused_parameters=True  # was True before
         )
     else:
         if torch.cuda.is_available():
@@ -206,7 +206,7 @@ def main(cfg: DictConfig):
             torch.save(model.module.state_dict(), str(dir_checkpoint / 'current_model.pth'))
             torch.save(optimizer.state_dict(), str(dir_checkpoint / 'current_optimizer.pth'))
             torch.save(scheduler.state_dict(), str(dir_checkpoint / 'current_scheduler.pth'))
-
+            logging.info("Checkpoint saved")
         if torch.distributed.is_initialized():
             torch.distributed.barrier()  # wait until save finished
 

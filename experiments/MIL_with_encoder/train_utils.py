@@ -22,11 +22,9 @@ from depth_trainer import TrainerDepth, DepthLossV2, CompassLoss
 from depth_trainer2Dpatches import Trainer2DPatchDepth, DepthLossSamplePatches
 from depth_trainer3D import Trainer3DDepth, DepthLoss3D
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
-    ResNetTransformer, ResNetGrouping, SelfSelectionNet, TwoStageNet, TwoStageNetSimple, TwoStageNetMaskedAttention, \
-    MultiHeadTwoStageNet, TwoStageNetTwoHeads, TransMIL, TwoStageNetTwoHeadsV2, ResNetDepth, TransDepth, CompassModel, \
-    CompassModelV2, TwoStageCompass, TwoStageCompassV2, TwoStageCompassV3, TwoStageCompassV4, TwoStageCompassV5, \
-    TwoStageCompassV6, DepthTumor
-from models3d import ResNetDepth2dPatches, ResNet3DDepth
+    ResNetTransformer, TwoStageNet, TwoStageNetSimple, TransMIL, ResNetDepth, TransDepth, CompassModel, \
+    CompassModelV2, DepthTumor, OrganModel
+from models3d import ResNetDepth2dPatches, ResNet3DDepth, TransAttention
 from rel_models import ResNetRel
 from swin_models import SWINCompass, SWINClassifier
 from trainer import Trainer
@@ -130,7 +128,7 @@ def pick_model(cfg: DictConfig):
     elif cfg.model.name == 'resnet34V3':
         model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
                                   num_attention_heads=cfg.model.num_heads, instnorm=cfg.model.inst_norm,
-                                  resnet_type="34")
+                                  resnet_type="34", frozen_backbone=cfg.model.frozen_backbone)
     elif cfg.model.name == 'resnetselfattention':
         model = ResNetSelfAttention(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'posembed':
@@ -139,22 +137,10 @@ def pick_model(cfg: DictConfig):
         model = ResNetTransformerPosEnc(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'transformer':
         model = ResNetTransformer(nr_of_blocks=cfg.model.nr_of_blocks)
-    elif cfg.model.name == 'resnetgroup':
-        model = ResNetGrouping(instnorm=cfg.model.inst_norm)
-    elif cfg.model.name == 'selfselectionnet':
-        model = SelfSelectionNet(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'twostagenet':
         model = TwoStageNet(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'twostagenet_simple':
         model = TwoStageNetSimple(instnorm=cfg.model.inst_norm)
-    elif cfg.model.name == 'twostagenet_masked':
-        model = TwoStageNetMaskedAttention(instnorm=cfg.model.inst_norm)
-    elif cfg.model.name == 'twostagenet_multi':
-        model = MultiHeadTwoStageNet(instnorm=cfg.model.inst_norm)
-    elif cfg.model.name == 'twostagenet_two_heads':
-        model = TwoStageNetTwoHeads(instnorm=cfg.model.inst_norm)
-    elif cfg.model.name == 'twostagenet_two_headsV2':
-        model = TwoStageNetTwoHeadsV2(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'transmil':
         model = TransMIL()
     elif cfg.model.name == 'resnetdepth':
@@ -165,20 +151,6 @@ def pick_model(cfg: DictConfig):
         model = CompassModel(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'compass_modelV2':
         model = CompassModelV2(instnorm=cfg.model.inst_norm)
-    elif cfg.model.name == 'compass_modelV3':
-        model = TwoStageCompass(instnorm=cfg.model.inst_norm)
-    elif cfg.model.name == 'twostagecompassV2':
-        model = TwoStageCompassV2(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
-    elif cfg.model.name == 'twostagecompassV3':
-        model = TwoStageCompassV3(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
-    elif cfg.model.name == 'twostagecompassV4':
-        model = TwoStageCompassV4(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
-    elif cfg.model.name == 'twostagecompassV5':
-        model = TwoStageCompassV5(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass,
-                                  ghostnorm=cfg.model.ghostnorm, range_0=-4,
-                                  range_1=4)
-    elif cfg.model.name == 'twostagecompassV6':
-        model = TwoStageCompassV6(instnorm=cfg.model.inst_norm, fixed_compass=cfg.model.fixed_compass)
     elif cfg.model.name == 'swincompassV1':
         model = SWINCompass()
     elif cfg.model.name == 'swinV1':
@@ -193,6 +165,10 @@ def pick_model(cfg: DictConfig):
         model = ResNetDepth2dPatches()
     elif cfg.model.name == 'depth_patches3D':
         model = ResNet3DDepth()
+    elif cfg.model.name == 'transattention':
+        model = TransAttention(instnorm=cfg.model.inst_norm, resnet_type="34")
+    elif cfg.model.name == 'organ':
+        model = OrganModel(num_attention_heads=cfg.model.num_heads, instnorm=cfg.model.inst_norm)
     return model
 
 

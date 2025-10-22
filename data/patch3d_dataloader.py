@@ -261,11 +261,14 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         edge_buffer = 75
         if self.kind == "2D":
             depth_buffer = 1
-            patch_size = (1, 150, 150)
+            patch_size = (1, 130, 130)
         else:
-            depth_buffer = 35
-            patch_size = (65, 150, 150)
-
+            if x.shape[1] > 65:
+                depth_buffer = 33
+                patch_size = (65, 150, 150)
+            else:
+                patch_size = (x.shape[1] - 2, 150, 150)
+                depth_buffer = (x.shape[1] - 1) // 2
         patch_centers = np.random.uniform(np.array([depth_buffer, edge_buffer, edge_buffer]),
                                           np.array([D - depth_buffer, H - edge_buffer, W - edge_buffer]),
                                           size=np.array([self.nr_of_patches, 3]))
@@ -274,7 +277,7 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         x_tensor = torch.as_tensor(x, dtype=torch.float32)
         start = time.time()
         patches = extract_patches_3d(x_tensor, patch_centers, patch_size)
-        #print("Extraction took", time.time() - start)
+        # print("Extraction took", time.time() - start)
         patches = torch.squeeze(patches)
 
         num_patches = patches.shape[0]

@@ -14,19 +14,18 @@ training:
 
 model:
   classes: 1
-  name: 'resnet34V3'
+  name: 'organ'
   model_type: '2D'
   pretrained_imagenet: True
   neighbour_range: 0
-  num_heads: 2
+  num_heads: 8
   inst_norm: True
   ghostnorm: False
   pretrained: True
   relevancy_head: False
   progressive_sigmoid_scaling: True
   depth: False
-  classification: True
-  frozen_backbone: True
+  classification: False
 
 data:
   batch_size: 1
