@@ -261,7 +261,7 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         edge_buffer = 75
         if self.kind == "2D":
             depth_buffer = 1
-            patch_size = (1, 130, 130)
+            patch_size = (1, 150, 150)
         else:
             if x.shape[1] > 65:
                 depth_buffer = 33

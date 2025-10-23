@@ -72,7 +72,7 @@ class ResNetAttentionV3(nn.Module):
         self.attention_heads = nn.ModuleList([
             AttentionHeadV3(self.L, self.D, self.K) for i in range(self.num_attention_heads)])
 
-        self.classifier = nn.Sequential(nn.Linear(1024, 1))
+        self.classifier = nn.Sequential(nn.Linear(512, 1))
         self.sig = nn.Sigmoid()
         if ghostnorm:
             if resnet_type == "18":
@@ -140,8 +140,8 @@ class ResNetAttentionV3(nn.Module):
 
         preds = self.cls_head(H)
         out['depth_scores'] = preds
-        if self.num_attention_heads > 1:
-            out["all_attention"] = F.softmax(attention_maps, dim=0)
+
+        out["all_attention"] = F.softmax(attention_maps, dim=0)
         return out  # Y_prob, Y_hat, unnorm_A
 
 
