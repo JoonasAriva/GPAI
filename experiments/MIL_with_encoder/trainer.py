@@ -30,10 +30,12 @@ def calculate_classification_error(Y, Y_hat):
 
     return error
 
+
 # for diff loss gating
 def smooth_gate(x, threshold, sharpness=50.0):
     # sigmoid gate that turns on smoothly near the threshold
     return torch.sigmoid(sharpness * (x - threshold))
+
 
 class Trainer:
     def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None):
@@ -175,8 +177,6 @@ class Trainer:
                     error = calculate_classification_error(bag_label, Y_hat)
                     epoch_error += error
 
-
-
                 if self.dann:
                     domain_pred = out['domain_pred']
                     path = meta[4][0]
@@ -212,12 +212,12 @@ class Trainer:
                         # ent_loss += 0.5 * entropy
 
                     total_loss += 1000 * a_loss  # + entropy)
-
-                    diff_loss = torch.sum(attention_scores[:, 0] * attention_scores[:, 1])
-                    gated_diff_loss = smooth_gate(diff_loss, 0.0003, 50)
-                    total_loss += gated_diff_loss
                     attn_loss += a_loss
-                    difference_loss += gated_diff_loss
+                    if self.num_heads > 1:
+                        diff_loss = torch.sum(attention_scores[:, 0] * attention_scores[:, 1])
+                        gated_diff_loss = smooth_gate(diff_loss, 0.0003, 50)
+                        total_loss += gated_diff_loss
+                        difference_loss += gated_diff_loss
 
                 total_loss /= self.update_freq
 

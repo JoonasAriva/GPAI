@@ -68,7 +68,7 @@ class AttentionLossPatches2D(DepthLossV2):
 
         dist_norm = torch.norm(real_distances, dim=2)
 
-        acceptable_distance = 100
+        acceptable_distance = 200
         mercy_value = acceptable_distance * self.step
         mod_step_matrix = torch.maximum(dist_norm - mercy_value,
                                         torch.zeros_like(dist_norm).cuda(non_blocking=True))

@@ -18,7 +18,7 @@ model:
   model_type: '2D'
   pretrained_imagenet: True
   neighbour_range: 0
-  num_heads: 2
+  num_heads: 1
   inst_norm: True
   ghostnorm: False
   pretrained: True
@@ -26,7 +26,7 @@ model:
   progressive_sigmoid_scaling: True
   depth: False
   classification: True
-  frozen_backbone: True
+  frozen_backbone: False
 
 data:
   batch_size: 1
