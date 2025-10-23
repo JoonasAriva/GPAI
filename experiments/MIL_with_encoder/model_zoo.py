@@ -53,7 +53,8 @@ class AttentionHeadV3(nn.Module):
 
 class ResNetAttentionV3(nn.Module):
 
-    def __init__(self, neighbour_range=0, num_attention_heads=1, instnorm=False, ghostnorm=False, resnet_type="18", frozen_backbone: bool = False):
+    def __init__(self, neighbour_range=0, num_attention_heads=1, instnorm=False, ghostnorm=False, resnet_type="18",
+                 frozen_backbone: bool = False):
         super().__init__()
         self.neighbour_range = neighbour_range
         self.num_attention_heads = num_attention_heads
@@ -72,7 +73,7 @@ class ResNetAttentionV3(nn.Module):
         self.attention_heads = nn.ModuleList([
             AttentionHeadV3(self.L, self.D, self.K) for i in range(self.num_attention_heads)])
 
-        self.classifier = nn.Sequential(nn.Linear(1024, 1))
+        self.classifier = nn.Sequential(nn.Linear(512, 1))
         self.sig = nn.Sigmoid()
         if ghostnorm:
             if resnet_type == "18":
@@ -110,6 +111,7 @@ class ResNetAttentionV3(nn.Module):
             for param in self.model.parameters():
                 param.requires_grad = False
                 print("Backbone frozen")
+
     def forward(self, x, scan_end, cam=False, **kwargs):
         out = dict()
         H = self.model(x[:scan_end])
@@ -124,17 +126,23 @@ class ResNetAttentionV3(nn.Module):
         A = F.softmax(unnorm_A, dim=1)
 
         all_agg_vectors = torch.einsum('tb,bf->tf', A, H)  # (num_heads, feature_dim)
-        M = all_agg_vectors.reshape(1, -1)
+        # M = all_agg_vectors.reshape(1, -1)
 
         # A = torch.mean(A, dim=0).view(1, -1)
         # M = torch.mm(A, H)
 
-        Y_prob = self.classifier(M)
-        Y_hat = self.sig(Y_prob)
-        Y_hat = torch.ge(Y_hat, 0.5).float()
+        Y_logits = self.classifier(all_agg_vectors)
+        Y_probs = self.sig(Y_logits)
+
+        scores = Y_probs.chunk(2, dim=1)
+        print(scores)
+        left_score = scores[:,0]
+        right_score = scores[:,1]
+        scan_prob = 1 - (1 - left_score) * (1 - right_score)
+        Y_hat = torch.ge(scan_prob, 0.5).float()
 
         out['predictions'] = Y_hat
-        out['scores'] = Y_prob
+        out['scores'] = Y_logits
         out['attention_weights'] = A
         out['unnorm_A'] = unnorm_A
 
