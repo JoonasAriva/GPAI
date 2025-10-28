@@ -60,15 +60,15 @@ class AttentionLossPatches2D(DepthLossV2):
     def calc_manhattan_distances_in_3d(self, matrix):
         return matrix.reshape(-1, 1, 3) - matrix.float()
 
-    def forward(self, attention, real_coordinates, verbose=False):
+    def forward(self, attention, real_coordinates, verbose=False, z_only: bool = False):
         voxel_spacing = torch.tensor([2.0, 0.84, 0.84])
         scaled_coordinates = real_coordinates * voxel_spacing
-
         real_distances = self.calc_manhattan_distances_in_3d(scaled_coordinates).float().cuda()
-
+        if z_only:
+            real_distances = torch.unsqueeze(real_distances[:,:,0],2)
         dist_norm = torch.norm(real_distances, dim=2)
 
-        acceptable_distance = 200
+        acceptable_distance = 60
         mercy_value = acceptable_distance * self.step
         mod_step_matrix = torch.maximum(dist_norm - mercy_value,
                                         torch.zeros_like(dist_norm).cuda(non_blocking=True))

@@ -23,12 +23,11 @@ from depth_trainer2Dpatches import Trainer2DPatchDepth, DepthLossSamplePatches
 from depth_trainer3D import Trainer3DDepth, DepthLoss3D
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
     ResNetTransformer, TwoStageNet, TwoStageNetSimple, TransMIL, ResNetDepth, TransDepth, CompassModel, \
-    CompassModelV2, DepthTumor, OrganModel
-from models3d import ResNetDepth2dPatches, ResNet3DDepth, TransAttention
+    CompassModelV2, DepthTumor, OrganModel, ResNetTwoHeads
+from models3d import ResNetDepth2dPatches, ResNet3DDepth, TransAttention, ResNet3D
 from rel_models import ResNetRel
 from swin_models import SWINCompass, SWINClassifier
 from trainer import Trainer
-from trainer_reg import TrainerReg, RegularizedAttentionLoss
 
 
 def prepare_dataloader(cfg: DictConfig):
@@ -128,7 +127,7 @@ def pick_model(cfg: DictConfig):
     elif cfg.model.name == 'resnet34V3':
         model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
                                   num_attention_heads=cfg.model.num_heads, instnorm=cfg.model.inst_norm,
-                                  resnet_type="34", frozen_backbone=cfg.model.frozen_backbone)
+                                  resnet_type="34", frozen_backbone=cfg.model.frozen_backbone, GRL=cfg.model.dann)
     elif cfg.model.name == 'resnetselfattention':
         model = ResNetSelfAttention(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'posembed':
@@ -165,10 +164,14 @@ def pick_model(cfg: DictConfig):
         model = ResNetDepth2dPatches()
     elif cfg.model.name == 'depth_patches3D':
         model = ResNet3DDepth()
+    elif cfg.model.name == 'resnet3D':
+        model = ResNet3D()
     elif cfg.model.name == 'transattention':
         model = TransAttention(instnorm=cfg.model.inst_norm, resnet_type="34")
     elif cfg.model.name == 'organ':
         model = OrganModel(num_attention_heads=cfg.model.num_heads, instnorm=cfg.model.inst_norm)
+    elif cfg.model.name == 'resnettwoheads':
+        model = ResNetTwoHeads(instnorm=cfg.model.inst_norm, resnet_type="34")
     return model
 
 
@@ -191,10 +194,6 @@ def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch, adv_optimizer=None):
         loss_function = DepthLoss3D(step=0.5).cuda()
         trainer = Trainer3DDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                                  steps_in_epoch=steps_in_epoch)
-    elif cfg.experiment == "attention_reg":
-        loss_function = RegularizedAttentionLoss().cuda()
-        trainer = TrainerReg(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
-                             steps_in_epoch=steps_in_epoch)
     elif cfg.experiment == "compass_twostage_adv":
         loss_function = TwoStageCompassLoss(step=0.01, fixed_compass=cfg.model.fixed_compass).cuda()
         trainer = TrainerCompassTwoStageAdv(optimizer_main=optimizer, optimizer_adv=adv_optimizer, scheduler=scheduler,

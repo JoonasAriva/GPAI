@@ -1,5 +1,4 @@
 import sys
-import time
 
 import nibabel as nib
 import numpy as np
@@ -118,7 +117,7 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
                  pasted_experiment: bool = False,
                  TUH_only: bool = False,
                  compass_filtering: bool = False, model_type: str = '3D',
-                 patch_size: tuple = (1, 200, 200), nr_of_patches: int = 100, **kwargs):
+                 patch_size: tuple = (1, 150, 150), nr_of_patches: int = 100, sample: str = 'uniform', **kwargs):
         super().__init__()
         self.augmentations = augmentations
         self.nth_slice = nth_slice
@@ -127,6 +126,7 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         self.kind = model_type
         self.patch_size = patch_size
         self.compass_filtering = compass_filtering
+        self.sample = sample
         if compass_filtering:
             self.COMPASS = CompassFilter(
                 dataframe_path_train='/users/arivajoo/GPAI/experiments/MIL_with_encoder/train_compass_scores.csv',
@@ -256,12 +256,11 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         x = np.transpose(x, (0, 3, 1, 2))  # C, D, H, W
 
         x = normalize_scan_new(x)
-
         D, H, W = x.shape[1:]
         edge_buffer = 75
         if self.kind == "2D":
             depth_buffer = 1
-            patch_size = (1, 150, 150)
+            patch_size = (1, 120, 120)
         else:
             if x.shape[1] > 65:
                 depth_buffer = 33
@@ -269,17 +268,23 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
             else:
                 patch_size = (x.shape[1] - 2, 150, 150)
                 depth_buffer = (x.shape[1] - 1) // 2
-        patch_centers = np.random.uniform(np.array([depth_buffer, edge_buffer, edge_buffer]),
-                                          np.array([D - depth_buffer, H - edge_buffer, W - edge_buffer]),
-                                          size=np.array([self.nr_of_patches, 3]))
-        patch_centers = np.round(patch_centers).astype(int)
+        if self.sample == "uniform":
+            patch_centers = np.random.uniform(np.array([depth_buffer, edge_buffer, edge_buffer]),
+                                              np.array([D - depth_buffer, H - edge_buffer, W - edge_buffer]),
+                                              size=np.array([self.nr_of_patches, 3]))
+            patch_centers = np.round(patch_centers).astype(int)
+        elif self.sample == "grid":
+            patch_centers = []
+            for d in range(depth_buffer, D - depth_buffer, patch_size[0]*9):
+                for h in range(edge_buffer, H - edge_buffer, patch_size[1]//2):
+                    for w in range(edge_buffer, W - edge_buffer, patch_size[2]//2):
+                        patch_centers.append([[d, h, w]])
+            patch_centers = np.concatenate(patch_centers)
 
         x_tensor = torch.as_tensor(x, dtype=torch.float32)
-        start = time.time()
         patches = extract_patches_3d(x_tensor, patch_centers, patch_size)
-        # print("Extraction took", time.time() - start)
-        patches = torch.squeeze(patches)
 
+        patches = torch.squeeze(patches)
         num_patches = patches.shape[0]
         indices = torch.arange(num_patches)
         keep_mask = (patches > 0.05).float().mean(dim=(1, 2, 3)) > self.foreground_threshold

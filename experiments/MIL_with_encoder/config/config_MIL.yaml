@@ -5,7 +5,7 @@ hydra:
 experiment: Attention
 
 training:
-  epochs: 70
+  epochs: 80
   learning_rate: 1e-4
   weight_decay: 5e-4
   weight_update_freq: 1
@@ -14,11 +14,11 @@ training:
 
 model:
   classes: 1
-  name: 'resnet34V3'
+  name: 'resnettwoheads'
   model_type: '2D'
   pretrained_imagenet: True
   neighbour_range: 0
-  num_heads: 1
+  num_heads: 2
   inst_norm: True
   ghostnorm: False
   pretrained: True
@@ -27,6 +27,7 @@ model:
   depth: False
   classification: True
   frozen_backbone: False
+  dann: False
 
 data:
   batch_size: 1
@@ -42,7 +43,7 @@ data:
   important_slices_only: False
   no_lungs: False
   patchify: True
-  nr_of_patches: 200
+  nr_of_patches: 275
   slice_level_supervision: 0
   random_experiment: False
 check: False

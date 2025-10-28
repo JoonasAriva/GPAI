@@ -61,7 +61,7 @@ def main(cfg: DictConfig):
 
     train_loader, test_loader = prepare_dataloader(cfg)
 
-    steps_in_epoch = 471  # with pärnu and kirc and kits its 1250, if just TUH, its 480
+    steps_in_epoch = 480  # with pärnu and kirc and kits its 1250, if just TUH, its 480
     steps_in_epoch = steps_in_epoch // n_gpus
     if cfg.data.dataloader == 'kidney_pasted':
         steps_in_epoch = 478 // n_gpus
@@ -93,6 +93,8 @@ def main(cfg: DictConfig):
         sd = torch.load(
             '/users/arivajoo/results/patches2D_depth/train/depth_patches2D/kidney_real/2025-09-17/14-50-05/checkpoints/best_model.pth',
             map_location='cuda:0')
+        # for 3d model:
+        # sd = torch.load('/users/arivajoo/results/patches3D_depth/train/depth_patches3D/kidney_real/2025-10-14/00-03-33/checkpoints/best_model.pth')
         new_sd = {key.replace("module.", ""): value for key, value in sd.items()}
         model.load_state_dict(state_dict=new_sd, strict=False)
         logging.info('Loaded depth pretrained model')

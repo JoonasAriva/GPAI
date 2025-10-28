@@ -243,7 +243,7 @@ class Trainer2DPatchDepth:
                 if self.attention_exp:
                     aloss = 0
                     for i in range(att_head_weights.shape[1]):
-                    aloss = ATTENTION_loss()
+                        aloss = ATTENTION_loss()
 
             if train:
                 time_backprop = time.time()

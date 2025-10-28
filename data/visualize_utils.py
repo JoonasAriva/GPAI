@@ -1,7 +1,7 @@
-from scipy.ndimage import zoom
-import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+import matplotlib.pyplot as plt
 from matplotlib.colors import *
+from scipy.ndimage import zoom
 
 # for discrete colormap
 discrete_cmap = ListedColormap(['#53c972', '#e3c634', '#2a5fbd'])
@@ -23,8 +23,8 @@ def get_animation(volume, use_zoom=True, title=None):
 
         plt.axis("off")
         if title is not None:
-            ttl = plt.text(0.5, 1.2, title[image],horizontalalignment='center', verticalalignment='bottom')
-            ims.append([im,ttl])
+            ttl = plt.text(0.5, 1.2, title[image], horizontalalignment='center', verticalalignment='bottom')
+            ims.append([im, ttl])
         else:
             ims.append([im])
 
@@ -36,7 +36,7 @@ def get_animation(volume, use_zoom=True, title=None):
 
 
 # single scan visulaistation of labels (discrete colors)
-def get_animation_discrete_color(volume, discrete_cmap, norm, use_zoom = True):
+def get_animation_discrete_color(volume, discrete_cmap, norm, use_zoom=True):
     if use_zoom:
         volume = zoom(volume, (0.3, 0.3, 0.3))
     fig = plt.figure()
@@ -77,6 +77,7 @@ def get_animation_with_discrete_masks(volume, mask, discrete_cmap, use_zoom=True
     plt.close()
     return ani
 
+
 def get_animation_with_masks(volume, mask, use_zoom=True):
     if use_zoom:
         volume = zoom(volume, (0.3, 0.3, 0.3))
@@ -87,7 +88,8 @@ def get_animation_with_masks(volume, mask, use_zoom=True):
     ims = []
     for image in range(0, volume.shape[0]):
         im = plt.imshow(volume[image, :, :], animated=True, cmap=plt.cm.bone)
-        im2 = plt.imshow(mask[image, :, :], animated=True, cmap=plt.cm.viridis, alpha=0.4)
+        im2 = plt.imshow(mask[image, :, :], animated=True, cmap=plt.cm.viridis, alpha=0.4, vmin=mask.min(),
+                         vmax=mask.max())
 
         plt.axis("off")
         ims.append([im, im2])
@@ -99,7 +101,7 @@ def get_animation_with_masks(volume, mask, use_zoom=True):
     return ani
 
 
-def get_full_animation(volume, cams, cams_meta, mask=None, use_zoom=True, overlay_volume = False):
+def get_full_animation(volume, cams, cams_meta, mask=None, use_zoom=True, overlay_volume=False):
     '''Get animation of volume, all cam maps and add a ground truth mask to volume if it is included'''
     nr_of_rows = 1
     nr_of_cols = len(cams) + 1
@@ -114,7 +116,7 @@ def get_full_animation(volume, cams, cams_meta, mask=None, use_zoom=True, overla
     ims = []
     if use_zoom:
         volume = zoom(volume.astype(np.float32), (0.4, 0.4, 0.4))
-        if  mask is not None:
+        if mask is not None:
             mask = zoom(mask.astype(np.float32), (0.4, 0.4, 0.4), mode='nearest')
     cams_reshaped = []
     for cam in cams:
@@ -137,14 +139,14 @@ def get_full_animation(volume, cams, cams_meta, mask=None, use_zoom=True, overla
             current_index = (i + 1 if i + 1 < nr_of_cols else i + 1 - nr_of_cols)
 
             im = current_ax[current_index].imshow(cam[image, :, :],
-                                                  animated=True)#, cmap=plt.cm.bone)
+                                                  animated=True)  # , cmap=plt.cm.bone)
             current_ax[current_index].set_title(cams_meta[i])
             current_ax[current_index].axis('off')
             slices.append(im)
 
             if overlay_volume:
                 im_over = current_ax[current_index].imshow(volume[image, :, :],
-                                                      animated=True, cmap=plt.cm.bone, alpha = 0.3)
+                                                           animated=True, cmap=plt.cm.bone, alpha=0.3)
                 slices.append(im_over)
 
         ims.append(slices)

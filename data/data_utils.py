@@ -239,8 +239,6 @@ def remove_empty_tiles(data):
 
 def get_kidney_datasets(type: str, no_lungs: bool = False, TUH_only: bool = False):
     # type = train, test
-    # base_path = '/gpfs/space/projects/BetterMedicine/joonas/'  # hpc
-
     base_path = '/scratch/project_465001979/ct_data/'  # lumi
 
     tuh_train_data_path = base_path + 'kidney/tuh_train/'
@@ -250,12 +248,10 @@ def get_kidney_datasets(type: str, no_lungs: bool = False, TUH_only: bool = Fals
     all_controls = []
     all_tumors = []
 
-    for data_path in [tuh_train_data_path, tuh_test_data_path]:  # , parnu_data_path]:
+    for data_path in [tuh_train_data_path, tuh_test_data_path]:
         control_path = data_path + 'controls/images/' + type + '/*nii.gz'
         tumor_path = data_path + 'cases/images/' + type + '/*nii.gz'
-        # if "parnu" in control_path:
-        #     control_path = control_path.replace("/project/", "/scratch/")
-        #     tumor_path = tumor_path.replace("/project/", "/scratch/")
+
         control = glob.glob(control_path)
         tumor = glob.glob(tumor_path)
 
@@ -269,13 +265,13 @@ def get_kidney_datasets(type: str, no_lungs: bool = False, TUH_only: bool = Fals
         tumor = glob.glob(other_datasets_path + '/imagesTr/' + type + '/*nii.gz')
         all_tumors.extend(tumor)
 
-        parnu_data_path = base_path + 'kidney/parnu/'
-        control_path = parnu_data_path + 'controls/images/' + type + '/*nii.gz'
-        tumor_path = parnu_data_path + 'cases/images/' + type + '/*nii.gz'
-        control = glob.glob(control_path)
-        tumor = glob.glob(tumor_path)
-        all_controls.extend(control)
-        all_tumors.extend(tumor)
+        # parnu_data_path = base_path + 'kidney/parnu/'
+        # control_path = parnu_data_path + 'controls/images/' + type + '/*nii.gz'
+        # tumor_path = parnu_data_path + 'cases/images/' + type + '/*nii.gz'
+        # control = glob.glob(control_path)
+        # tumor = glob.glob(tumor_path)
+        # all_controls.extend(control)
+        # all_tumors.extend(tumor)
 
         return all_controls, all_tumors
 
@@ -371,7 +367,7 @@ def remove_table_3d(img):
 
     # remove small objects not connected to the main body. 40000 pixels per slice seems to do the work for 512x512 resolution
     # changed to 20 000 due to resizing/ spacing normalization
-    min_size = 40000 * img.shape[2] * (img.shape[0]/512)
+    min_size = 40000 * img.shape[2] * (img.shape[0] / 512)
     keep_mask = morphology.remove_small_objects(dilated_mask, min_size=min_size)
     # keep_mask = np.expand_dims(keep_mask, 0)
 

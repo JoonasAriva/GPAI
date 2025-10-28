@@ -1,6 +1,7 @@
 import gc
 import sys
 import time
+from collections import defaultdict
 from contextlib import nullcontext
 
 import numpy as np
@@ -13,13 +14,13 @@ from tqdm import tqdm
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
 from misc_utils import get_percentage_of_scans_from_dataframe
-from data.data_utils import get_source_label, map_source_label
+from data.data_utils import get_source_label
 from attention_loss import AttentionLossPatches2D
 from multi_gpu_utils import print_multi_gpu
 from depth_trainer2Dpatches import DepthLossSamplePatches
 
 DEPTH_loss = DepthLossSamplePatches().cuda()
-DANN_loss = nn.CrossEntropyLoss().cuda()
+DANN_loss = nn.BCEWithLogitsLoss().cuda()
 # ATTENTION_loss = AttentionLoss(step=1).cuda()
 ATTENTION_loss = AttentionLossPatches2D(step=1).cuda()
 
@@ -32,7 +33,7 @@ def calculate_classification_error(Y, Y_hat):
 
 
 # for diff loss gating
-def smooth_gate(x, threshold, sharpness=50.0):
+def smooth_gate(x, threshold, sharpness):
     # sigmoid gate that turns on smoothly near the threshold
     return torch.sigmoid(sharpness * (x - threshold))
 
@@ -54,8 +55,9 @@ class Trainer:
         self.slice_level_supervision = cfg.data.slice_level_supervision
         self.classification = cfg.model.classification
         self.num_heads = cfg.model.num_heads
-
-        if cfg.model.name == "DANN":
+        print("num heads: ", self.num_heads)
+        if cfg.model.dann:
+            print("Using DANN")
             self.dann = True
         else:
             self.dann = False
@@ -93,21 +95,10 @@ class Trainer:
 
     def run_one_epoch(self, model, data_loader, epoch: int, train: bool = True, local_rank=0):
 
-        results = dict()
-        epoch_loss = 0.
-        class_loss = 0.
-        epoch_error = 0.
-        f1 = 0.
-        domain_loss = 0.
-        attn_loss = 0.
-        depth_loss = 0.
-        difference_loss = 0.
-        ent_loss = 0.
+        results = defaultdict(int)  # all metrics start at zero
+
         step = 0
-        d_loss = 0.
-        h_loss = 0.
-        w_loss = 0.
-        dist_loss = 0.
+
         nr_of_batches = len(data_loader)
 
         disable_tqdm = False if local_rank == 0 else True
@@ -119,7 +110,6 @@ class Trainer:
             model.train()
         else:
             model.eval()
-        # model.train()
 
         scaler = torch.cuda.amp.GradScaler()
         self.optimizer.zero_grad(set_to_none=True)
@@ -149,7 +139,7 @@ class Trainer:
             step += 1
 
             # next line disabled for 2d patch model
-            # data = torch.permute(torch.squeeze(data), (3, 0, 1, 2))  # if training a swin model, disable this line
+            # data = torch.permute(data, (1, 0, 2, 3, 4))
             data = torch.squeeze(data)
 
             # data = data.to(self.device, dtype=torch.float16, non_blocking=True)
@@ -170,30 +160,37 @@ class Trainer:
 
                     cls_loss = self.loss_function(Y_prob, bag_label.float())
                     total_loss += cls_loss
-                    class_loss += cls_loss.item()
+                    results["class_loss"] += cls_loss.item()
 
                     outputs.append(Y_hat.detach().cpu())
                     targets.append(bag_label.detach().cpu())
                     error = calculate_classification_error(bag_label, Y_hat)
-                    epoch_error += error
+                    results["error"] += error
 
                 if self.dann:
-                    domain_pred = out['domain_pred']
-                    path = meta[4][0]
-                    source_label = get_source_label(path)
-                    int_label = map_source_label(source_label).type(torch.LongTensor)
+                    # domain_pred = out['domain_pred']
+                    # path = meta[4][0]
+                    # source_label = get_source_label(path)
+                    # int_label = map_source_label(source_label).type(torch.LongTensor)
 
-                    dann_loss = DANN_loss(domain_pred, int_label.cuda())
-                    total_loss += 0.5 * dann_loss
-                    domain_loss += dann_loss.item()
-                    domain_predictions.append(torch.argmax(domain_pred).item())
-                    target_sources.append(int_label)
+                    dann_loss = DANN_loss(out["opposite_Y_logits"], bag_label)
+                    total_loss += 0.1 * dann_loss
+                    results["domain_loss"] += dann_loss.item()
+                    # domain_predictions.append(torch.argmax(domain_pred).item())
+                    # target_sources.append(int_label)
 
                 if self.depth:
                     depth_scores = out['depth_scores']
 
                     (dloss, hloss, wloss), norm_loss = DEPTH_loss(depth_scores, patch_centers)
                     depth_loss = (dloss + hloss + wloss + norm_loss)
+                    results["depth_loss"] += depth_loss
+
+                    results["d_loss"] += dloss.item()
+                    results["w_loss"] += wloss.item()
+                    results["h_loss"] += hloss.item()
+                    results["dist_loss"] += norm_loss.item()
+
                     total_loss += depth_loss
                 if self.attention:
                     # attention_scores = out['attention_weights'].flatten()
@@ -202,22 +199,26 @@ class Trainer:
                     a_loss = 0
                     attention_scores = out['all_attention']
 
+                    summed_attention = 0
                     for i in range(self.num_heads):
                         head_attention = attention_scores[:, i].flatten()
-
+                        summed_attention += head_attention
                         a_loss += ATTENTION_loss(head_attention, patch_centers)
                         # entropy part
                         # N = torch.log(torch.tensor(len(head_attention), dtype=torch.float16)).cuda()
                         # entropy = 0 * -0.005 * (head_attention * torch.log(head_attention + 1e-12)).sum(dim=0) / N
                         # ent_loss += 0.5 * entropy
-
-                    total_loss += 1000 * a_loss  # + entropy)
-                    attn_loss += a_loss
+                    z_bounding_loss = ATTENTION_loss(summed_attention, patch_centers, z_only=True)
+                    total_loss += 400 * (a_loss + z_bounding_loss)  # + entropy) from 1000 --> 400
+                    results["attention_loss"] += a_loss
+                    results["z_bound"] = + z_bounding_loss
                     if self.num_heads > 1:
                         diff_loss = torch.sum(attention_scores[:, 0] * attention_scores[:, 1])
-                        gated_diff_loss = smooth_gate(diff_loss, 0.0003, 50)
+
+                        gated_diff_loss = diff_loss * smooth_gate(diff_loss, 0.001, 20000)
+
                         total_loss += gated_diff_loss
-                        difference_loss += gated_diff_loss
+                        results["difference_loss"] += gated_diff_loss
 
                 total_loss /= self.update_freq
 
@@ -234,13 +235,7 @@ class Trainer:
                         self.scheduler.step()
                     self.optimizer.zero_grad(set_to_none=True)
 
-            epoch_loss += total_loss.item() * self.update_freq
-
-            if self.depth:
-                d_loss += dloss.item()
-                w_loss += wloss.item()
-                h_loss += hloss.item()
-                dist_loss += norm_loss.item()
+            results["loss"] += total_loss.item() * self.update_freq
 
             if step >= 6 and self.check:
                 break
@@ -254,26 +249,22 @@ class Trainer:
 
         gc.collect()
         torch.cuda.empty_cache()
-        # calculate loss and error for epoch
 
-        epoch_loss /= nr_of_batches
-        epoch_error /= nr_of_batches
-        class_loss /= nr_of_batches
-        domain_loss /= nr_of_batches
-        depth_loss /= nr_of_batches
-        attn_loss /= nr_of_batches
-        ent_loss /= nr_of_batches
-        difference_loss /= nr_of_batches
+        # calculate epoch averages
+        for key, value in results.items():
+            results[key] = value / nr_of_batches
+        results["epoch"] = epoch  # epoch number
 
-        if self.dann:
-            target_sources = np.concatenate(target_sources)
-            domain_predictions = np.array(domain_predictions)
-            domain_f1 = f1_score(target_sources, domain_predictions, average='macro')
-            results["domain_f1_score"] = domain_f1
+        # if self.dann:
+        #     target_sources = np.concatenate(target_sources)
+        #     domain_predictions = np.array(domain_predictions)
+        #     domain_f1 = f1_score(target_sources, domain_predictions, average='macro')
+        #     results["domain_f1_score"] = domain_f1
         if self.classification:
             outputs = np.concatenate(outputs)
             targets = np.concatenate(targets)
             f1 = f1_score(targets, outputs, average='macro')
+            results["f1_score"] = f1
 
         print_multi_gpu(
             f"data speed: {round(np.mean(data_times), 3)}, forward speed ,{round(np.mean(forward_times), 3)},backprop speed: , {round(np.mean(backprop_times), 3)}",
@@ -281,28 +272,13 @@ class Trainer:
 
         print_multi_gpu(
             '{}: loss: {:.4f}, enc error: {:.4f}, f1 macro score: {:.4f} '.format(
-                "Train" if train else "Validation", epoch_loss, epoch_error, f1), local_rank)
+                "Train" if train else "Validation", results["loss"], results["error"], f1), local_rank)
         print_multi_gpu(
-            f"Main classification loss: {round(class_loss, 3)}", local_rank)
+            f"Main classification loss: {round(results['class_loss'], 3)}", local_rank)
 
         if self.attention:
-            print_multi_gpu(f"Attention loss: {round(attn_loss.item(), 6)}", local_rank)
+            print_multi_gpu(f"Attention loss: {round(results['attention_loss'].item(), 6)}", local_rank)
 
         # print(f"Attention mAP for kidney region all scans: {round(np.mean(attention_scores['all_scans'][0]), 3)}")
-
-        results["epoch"] = epoch
-        results["class_loss"] = class_loss
-        results["loss"] = epoch_loss
-        results["error"] = epoch_error
-        results["f1_score"] = f1
-        results["domain_loss"] = domain_loss
-        results["depth_loss"] = depth_loss
-        results["attention_loss"] = attn_loss
-        results["difference_loss"] = difference_loss
-        results["entropy_loss"] = ent_loss
-        results["d_loss"] = d_loss
-        results["h_loss"] = h_loss
-        results["w_loss"] = w_loss
-        results["dist_loss"] = dist_loss
 
         return results

@@ -2,9 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from monai.networks.nets import resnet
-from monai.networks.nets import resnet18
 from torchvision.models import resnet18, ResNet18_Weights, resnet34, ResNet34_Weights, resnet
+from monai.networks.nets import resnet18, resnet34
 
+
+from gradient_reversal import GradientReversal
 from model_zoo import MyGroupNorm, AttentionHeadV3
 
 
@@ -25,6 +27,91 @@ class ResNet3DDepth(nn.Module):
         feats = self.backbone(x)
         preds = self.cls_head(feats)
         return preds
+
+
+class ResNet3D(nn.Module):
+
+    def __init__(self, num_attention_heads=1, resnet_type="18",
+                 frozen_backbone: bool = False, GRL: bool = False):
+        super().__init__()
+        self.num_attention_heads = num_attention_heads
+        self.frozen_backbone = frozen_backbone
+        self.grl = GRL
+
+        print("# of attention heads: ", self.num_attention_heads)
+
+        self.L = 512 * 1 * 1
+        self.D = 128
+        self.K = 1
+        self.resnet_type = resnet_type
+
+        # self.adaptive_pooling = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)))
+        self.attention_heads = nn.ModuleList([
+            AttentionHeadV3(self.L, self.D, self.K) for i in range(self.num_attention_heads)])
+
+        self.classifier = nn.Sequential(nn.Linear(512, 1))
+        self.sig = nn.Sigmoid()
+
+        if resnet_type == "18":
+
+            self.backbone = resnet18(pretrained=False, spatial_dims=3, n_input_channels=1, num_classes=3)
+        elif resnet_type == "34":
+            self.backbone = resnet34(pretrained=False, spatial_dims=3, n_input_channels=1, num_classes=3)
+
+        self.backbone.fc = nn.Identity()
+
+        self.cls_head = nn.Linear(512, 3)  # for depth predicitng
+
+        if self.grl:
+            self.grad_reversal = GradientReversal(1)
+            self.grl_classifier = nn.Sequential(nn.Linear(512, 1))
+
+    def forward(self, x, scan_end, cam=False, **kwargs):
+        out = dict()
+        H = self.backbone(x[:scan_end])
+        H = H.view(-1, 512 * 1 * 1)
+
+        attention_maps = [head(H) for head in self.attention_heads]
+        attention_maps = torch.cat(attention_maps, dim=1)
+
+        unnorm_A = attention_maps.view(self.num_attention_heads, -1)
+
+        A = F.softmax(unnorm_A, dim=1)
+        opposite_A = F.softmax(-unnorm_A, dim=1)
+
+        all_agg_vectors = torch.einsum('tb,bf->tf', A, H)  # (num_heads, feature_dim)
+
+        # M = all_agg_vectors.reshape(1, -1)
+
+        # A = torch.mean(A, dim=0).view(1, -1)
+        # M = torch.mm(A, H)
+
+        Y_logits = self.classifier(all_agg_vectors)
+        individual_predictions = self.classifier(H)
+        Y_probs = self.sig(Y_logits)
+
+        if self.grl:
+            opposite_agg_vectors = torch.einsum('tb,bf->tf', opposite_A, H)
+            opposite_Y_logits = self.grl_classifier(self.grad_reversal(opposite_agg_vectors))
+            out["opposite_Y_logits"] = opposite_Y_logits
+
+        # scores = Y_probs.chunk(2, dim=1)
+        # print(scores)
+        # left_score = scores[:,0]
+        # right_score = scores[:,1]
+        # scan_prob = 1 - (1 - left_score) * (1 - right_score)
+        Y_hat = torch.ge(Y_probs, 0.5).float()
+
+        out['predictions'] = Y_hat
+        out['scores'] = Y_logits
+        out['attention_weights'] = A
+        out['unnorm_A'] = unnorm_A
+
+        preds = self.cls_head(H)
+        out['depth_scores'] = preds
+        out['individual_predictions'] = individual_predictions
+        out["all_attention"] = F.softmax(attention_maps, dim=0)
+        return out  # Y_prob, Y_hat, unnorm_A
 
 
 class TransformerBlock(nn.Module):
@@ -111,12 +198,12 @@ class TransAttention(nn.Module):
             if resnet_type == "34":
                 self.model = resnet34(weights=ResNet34_Weights.DEFAULT)
         self.model.fc = nn.Identity()
-        #modules = list(model.children())[:-2]
-        #self.backbone = nn.Sequential(*modules)
-        self.trans_block = TransformerBlock(dim=512, n_heads=8, mlp_ratio=4)
+        # modules = list(model.children())[:-2]
+        # self.backbone = nn.Sequential(*modules)
+        self.trans_block = TransformerBlock(dim=512, n_heads=4, mlp_ratio=4)
         # for keeping the pretraining task active
 
-        #self.cls_head = nn.Linear(512, 3)
+        # self.cls_head = nn.Linear(512, 3)
 
     def forward(self, x, scan_end, **kwargs):
         out = dict()
@@ -128,18 +215,18 @@ class TransAttention(nn.Module):
 
         attention_maps = [head(F.layer_norm(mixed_H, mixed_H.shape[1:])) for head in self.attention_heads]
 
-        #attention_maps = [head(mixed_H) for head in self.attention_heads]
+        # attention_maps = [head(mixed_H) for head in self.attention_heads]
 
         attention_maps = torch.cat(attention_maps, dim=1)
-        print("attention maps: ",attention_maps.shape)
+
         unnorm_A = attention_maps.view(self.num_attention_heads, -1)
-        print("unnorm_A: ", unnorm_A.shape)
+
         A = F.softmax(unnorm_A, dim=1)
-        print("A: ", A.shape)
+
         A = torch.mean(A, dim=0).view(1, -1)
-        print("A: ", A.shape)
+
         M = torch.mm(A, H)
-        print("M: ", M.shape)
+
         Y_prob = self.classifier(M)
         Y_hat = self.sig(Y_prob)
         Y_hat = torch.ge(Y_hat, 0.5).float()

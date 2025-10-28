@@ -8,6 +8,8 @@ from torch import Tensor as T
 from torchvision.models import resnet
 from torchvision.models import resnet18, ResNet18_Weights, resnet34, ResNet34_Weights
 
+from gradient_reversal import GradientReversal
+
 
 # from experiments.MIL_with_encoder.models import Attention
 
@@ -54,12 +56,13 @@ class AttentionHeadV3(nn.Module):
 class ResNetAttentionV3(nn.Module):
 
     def __init__(self, neighbour_range=0, num_attention_heads=1, instnorm=False, ghostnorm=False, resnet_type="18",
-                 frozen_backbone: bool = False):
+                 frozen_backbone: bool = False, GRL: bool = False):
         super().__init__()
         self.neighbour_range = neighbour_range
         self.num_attention_heads = num_attention_heads
         self.instnorm = instnorm
         self.frozen_backbone = frozen_backbone
+        self.grl = GRL
 
         print("Using neighbour attention with a range of ", self.neighbour_range)
         print("# of attention heads: ", self.num_attention_heads)
@@ -111,6 +114,9 @@ class ResNetAttentionV3(nn.Module):
             for param in self.model.parameters():
                 param.requires_grad = False
                 print("Backbone frozen")
+        if self.grl:
+            self.grad_reversal = GradientReversal(1)
+            self.grl_classifier = nn.Sequential(nn.Linear(512, 1))
 
     def forward(self, x, scan_end, cam=False, **kwargs):
         out = dict()
@@ -124,22 +130,30 @@ class ResNetAttentionV3(nn.Module):
         unnorm_A = attention_maps.view(self.num_attention_heads, -1)
 
         A = F.softmax(unnorm_A, dim=1)
+        opposite_A = F.softmax(-unnorm_A, dim=1)
 
         all_agg_vectors = torch.einsum('tb,bf->tf', A, H)  # (num_heads, feature_dim)
+
         # M = all_agg_vectors.reshape(1, -1)
 
         # A = torch.mean(A, dim=0).view(1, -1)
         # M = torch.mm(A, H)
 
         Y_logits = self.classifier(all_agg_vectors)
+        individual_predictions = self.classifier(H)
         Y_probs = self.sig(Y_logits)
 
-        scores = Y_probs.chunk(2, dim=1)
-        print(scores)
-        left_score = scores[:,0]
-        right_score = scores[:,1]
-        scan_prob = 1 - (1 - left_score) * (1 - right_score)
-        Y_hat = torch.ge(scan_prob, 0.5).float()
+        if self.grl:
+            opposite_agg_vectors = torch.einsum('tb,bf->tf', opposite_A, H)
+            opposite_Y_logits = self.grl_classifier(self.grad_reversal(opposite_agg_vectors))
+            out["opposite_Y_logits"] = opposite_Y_logits
+
+        # scores = Y_probs.chunk(2, dim=1)
+        # print(scores)
+        # left_score = scores[:,0]
+        # right_score = scores[:,1]
+        # scan_prob = 1 - (1 - left_score) * (1 - right_score)
+        Y_hat = torch.ge(Y_probs, 0.5).float()
 
         out['predictions'] = Y_hat
         out['scores'] = Y_logits
@@ -148,9 +162,89 @@ class ResNetAttentionV3(nn.Module):
 
         preds = self.cls_head(H)
         out['depth_scores'] = preds
-
+        out['individual_predictions'] = individual_predictions
         out["all_attention"] = F.softmax(attention_maps, dim=0)
         return out  # Y_prob, Y_hat, unnorm_A
+
+
+class ResNetTwoHeads(nn.Module):
+
+    def __init__(self, num_attention_heads=2, instnorm=False, resnet_type="34"):
+        super().__init__()
+
+        self.num_attention_heads = num_attention_heads
+        self.instnorm = instnorm
+
+        print("# of attention heads: ", self.num_attention_heads)
+
+        self.L = 512 * 1 * 1
+        self.D = 128
+        self.K = 1
+        self.resnet_type = resnet_type
+
+        # self.adaptive_pooling = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)))
+        self.attention_heads = nn.ModuleList([
+            AttentionHeadV3(self.L, self.D, self.K) for i in range(self.num_attention_heads)])
+
+        self.classifier = nn.Sequential(nn.Linear(512, 1))
+
+        self.sig = nn.Sigmoid()
+
+        if instnorm:
+            # load the resnet with instance norm instead of batch norm
+
+            if resnet_type == "18":
+                self.model = resnet.ResNet(resnet.BasicBlock, [2, 2, 2, 2], norm_layer=MyGroupNorm)
+                sd = resnet18(weights=ResNet18_Weights.DEFAULT).state_dict()
+            elif resnet_type == "34":
+                self.model = resnet.ResNet(resnet.BasicBlock, [3, 4, 6, 3], norm_layer=MyGroupNorm)
+                sd = resnet34(weights=ResNet34_Weights.DEFAULT).state_dict()
+
+            self.model.load_state_dict(sd, strict=False)
+            self.model.fc = nn.Identity()
+        else:
+            if resnet_type == "18":
+                self.model = resnet18(weights=ResNet18_Weights.DEFAULT)
+            if resnet_type == "34":
+                self.model = resnet34(weights=ResNet34_Weights.DEFAULT)
+
+        self.cls_head = nn.Linear(512, 3)  # for depth predicitng
+
+    def forward(self, x, scan_end, **kwargs):
+        out = dict()
+        H = self.model(x[:scan_end])
+        H = H.view(-1, 512)
+
+        attention_maps = [head(H) for head in self.attention_heads]
+        attention_maps = torch.cat(attention_maps, dim=1)
+
+        unnorm_A = attention_maps.view(self.num_attention_heads, -1)
+
+        A = F.softmax(unnorm_A, dim=1)
+        all_agg_vectors = torch.einsum('tb,bf->tf', A, H)  # (num_heads, feature_dim)
+
+        Y_logits = self.classifier(all_agg_vectors)
+        Y_probs = self.sig(Y_logits)
+        left_logit, right_logit = Y_logits[0], Y_logits[1]
+        left_score, right_score = Y_probs[0], Y_probs[1]
+        scan_prob = 1 - (1 - left_score) * (1 - right_score)
+        Y_hat = torch.ge(scan_prob, 0.5).float()
+
+        stacked = torch.cat([left_logit, right_logit, left_logit + right_logit], dim=0).view(-1, 3)
+        scan_logit = torch.logsumexp(stacked, dim=1).view(-1, 1)
+
+        out["all_attention"] = F.softmax(attention_maps, dim=0)
+
+        out.update({
+            "predictions": Y_hat,
+            "scores": scan_logit,
+            "attention_weights": A,
+            "unnorm_A": unnorm_A,
+            "all_attention": F.softmax(attention_maps, dim=0),
+            "depth_scores": self.cls_head(H),
+            "individual_predictions": self.classifier(H),
+        })
+        return out
 
 
 class OrganModel(nn.Module):
