@@ -150,7 +150,7 @@ class Trainer:
                 total_loss = 0
                 path = meta[2][0]  # was 4 before (4-->2)
                 source_label = get_source_label(path)
-                out = model.forward(data, label=bag_label, scan_end=num_patches, source_label=source_label)
+                out = model.forward(data, label=bag_label, scan_end=num_patches, source_label=source_label, patch_centers=patch_centers)
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
@@ -208,7 +208,8 @@ class Trainer:
                         # N = torch.log(torch.tensor(len(head_attention), dtype=torch.float16)).cuda()
                         # entropy = 0 * -0.005 * (head_attention * torch.log(head_attention + 1e-12)).sum(dim=0) / N
                         # ent_loss += 0.5 * entropy
-                    z_bounding_loss = ATTENTION_loss(summed_attention, patch_centers, z_only=True)
+                    attention_matrix = attention_scores[:, 0] * attention_scores[:, 1].reshape(-1, 1)
+                    z_bounding_loss = ATTENTION_loss(summed_attention, patch_centers, z_only=True, attention_matrix=attention_matrix)
                     total_loss += 400 * (a_loss + z_bounding_loss)  # + entropy) from 1000 --> 400
                     results["attention_loss"] += a_loss
                     results["z_bound"] = + z_bounding_loss

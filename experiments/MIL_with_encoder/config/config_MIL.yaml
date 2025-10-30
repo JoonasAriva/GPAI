@@ -5,7 +5,7 @@ hydra:
 experiment: Attention
 
 training:
-  epochs: 80
+  epochs: 90
   learning_rate: 1e-4
   weight_decay: 5e-4
   weight_update_freq: 1
@@ -14,7 +14,7 @@ training:
 
 model:
   classes: 1
-  name: 'resnettwoheads'
+  name: 'resnetKNN'
   model_type: '2D'
   pretrained_imagenet: True
   neighbour_range: 0
@@ -43,7 +43,7 @@ data:
   important_slices_only: False
   no_lungs: False
   patchify: True
-  nr_of_patches: 275
+  nr_of_patches: 300
   slice_level_supervision: 0
   random_experiment: False
 check: False

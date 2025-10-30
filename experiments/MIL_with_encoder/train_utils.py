@@ -23,7 +23,7 @@ from depth_trainer2Dpatches import Trainer2DPatchDepth, DepthLossSamplePatches
 from depth_trainer3D import Trainer3DDepth, DepthLoss3D
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
     ResNetTransformer, TwoStageNet, TwoStageNetSimple, TransMIL, ResNetDepth, TransDepth, CompassModel, \
-    CompassModelV2, DepthTumor, OrganModel, ResNetTwoHeads
+    CompassModelV2, DepthTumor, OrganModel, ResNetTwoHeads, ResnetTwoHeadsKNN
 from models3d import ResNetDepth2dPatches, ResNet3DDepth, TransAttention, ResNet3D
 from rel_models import ResNetRel
 from swin_models import SWINCompass, SWINClassifier
@@ -172,6 +172,8 @@ def pick_model(cfg: DictConfig):
         model = OrganModel(num_attention_heads=cfg.model.num_heads, instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'resnettwoheads':
         model = ResNetTwoHeads(instnorm=cfg.model.inst_norm, resnet_type="34")
+    elif cfg.model.name == 'resnetKNN':
+        model = ResnetTwoHeadsKNN(instnorm=cfg.model.inst_norm, resnet_type="34")
     return model
 
 

@@ -60,24 +60,35 @@ class AttentionLossPatches2D(DepthLossV2):
     def calc_manhattan_distances_in_3d(self, matrix):
         return matrix.reshape(-1, 1, 3) - matrix.float()
 
-    def forward(self, attention, real_coordinates, verbose=False, z_only: bool = False):
+    def forward(self, attention, real_coordinates, verbose=False, z_only: bool = False, attention_matrix=None):
         voxel_spacing = torch.tensor([2.0, 0.84, 0.84])
+        acceptable_distance = 70
         scaled_coordinates = real_coordinates * voxel_spacing
         real_distances = self.calc_manhattan_distances_in_3d(scaled_coordinates).float().cuda()
         if z_only:
-            real_distances = torch.unsqueeze(real_distances[:,:,0],2)
-        dist_norm = torch.norm(real_distances, dim=2)
+            z_dist = torch.unsqueeze(real_distances[:, :, 0], 2)
+            y_dist = real_distances[:, :, 1]
+            x_dist = torch.unsqueeze(real_distances[:, :, 2], 2)
+            real_distances = torch.cat((z_dist, x_dist), dim=2)
+            acceptable_distance = 100
 
-        acceptable_distance = 60
+        dist_norm = torch.norm(real_distances, dim=2)
         mercy_value = acceptable_distance * self.step
+        # mod_step_matrix = dist_norm - mercy_value
         mod_step_matrix = torch.maximum(dist_norm - mercy_value,
                                         torch.zeros_like(dist_norm).cuda(non_blocking=True))
 
-        attention_matrix = attention * attention.reshape(-1, 1)
-        loss_matrix = torch.tril(mod_step_matrix * attention_matrix)
+        if z_only:
+            loss_matrix_zx = mod_step_matrix * attention_matrix
 
-
-
+            loss_matrix_y = torch.maximum((-y_dist + 80), torch.zeros_like(y_dist).cuda(
+                non_blocking=True)) * attention_matrix  # push heads apart in y direction
+            loss_matrix = loss_matrix_zx + loss_matrix_y
+            print("zx: ",loss_matrix_zx.sum() / (len(attention) ** 2))
+            print("y: ",loss_matrix_y.sum() / (len(attention) ** 2))
+        else:
+            attention_matrix = attention * attention.reshape(-1, 1)
+            loss_matrix = torch.tril(mod_step_matrix * attention_matrix)
 
         if verbose:
             for i in range(3):
@@ -94,7 +105,6 @@ class AttentionLossPatches2D(DepthLossV2):
                 mod_step_matrix = torch.maximum(dist_norm - mercy_value,
                                                 torch.zeros_like(dist_norm).cuda(non_blocking=True))
 
-                attention_matrix = sorted_attention * sorted_attention.reshape(-1, 1)
                 loss_matrix = torch.tril(mod_step_matrix * attention_matrix)
 
                 fig, axs = plt.subplots(1, 4, figsize=(24, 8))
@@ -134,10 +144,7 @@ class AttentionLossPatches2DReward(DepthLossV2):
 
         reward = torch.exp(-dist_norm / mercy_value)
 
-
         attention_matrix = attention * attention.reshape(-1, 1)
         loss_matrix = torch.tril(reward * attention_matrix)
 
-
         return -loss_matrix.sum() / (len(attention) ** 2)
-
