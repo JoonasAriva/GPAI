@@ -62,14 +62,14 @@ class AttentionLossPatches2D(DepthLossV2):
 
     def forward(self, attention, real_coordinates, verbose=False, z_only: bool = False, attention_matrix=None):
         voxel_spacing = torch.tensor([2.0, 0.84, 0.84])
-        acceptable_distance = 70
+        acceptable_distance = 100
         scaled_coordinates = real_coordinates * voxel_spacing
         real_distances = self.calc_manhattan_distances_in_3d(scaled_coordinates).float().cuda()
         if z_only:
             z_dist = torch.unsqueeze(real_distances[:, :, 0], 2)
             y_dist = real_distances[:, :, 1]
-            x_dist = torch.unsqueeze(real_distances[:, :, 2], 2)
-            real_distances = torch.cat((z_dist, x_dist), dim=2)
+            # x_dist = torch.unsqueeze(real_distances[:, :, 2], 2)
+            real_distances = z_dist
             acceptable_distance = 100
 
         dist_norm = torch.norm(real_distances, dim=2)
@@ -79,13 +79,13 @@ class AttentionLossPatches2D(DepthLossV2):
                                         torch.zeros_like(dist_norm).cuda(non_blocking=True))
 
         if z_only:
-            loss_matrix_zx = mod_step_matrix * attention_matrix
+            loss_matrix_z = mod_step_matrix * attention_matrix
 
-            loss_matrix_y = torch.maximum((-y_dist + 80), torch.zeros_like(y_dist).cuda(
+            loss_matrix_y = torch.maximum((-y_dist + 40), torch.zeros_like(y_dist).cuda(
                 non_blocking=True)) * attention_matrix  # push heads apart in y direction
-            loss_matrix = loss_matrix_zx + loss_matrix_y
-            print("zx: ",loss_matrix_zx.sum() / (len(attention) ** 2))
-            print("y: ",loss_matrix_y.sum() / (len(attention) ** 2))
+            loss_matrix = loss_matrix_z + loss_matrix_y
+            # print("zx: ",loss_matrix_zx.sum() / (len(attention) ** 2))
+            # print("y: ",loss_matrix_y.sum() / (len(attention) ** 2))
         else:
             attention_matrix = attention * attention.reshape(-1, 1)
             loss_matrix = torch.tril(mod_step_matrix * attention_matrix)

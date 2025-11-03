@@ -39,7 +39,7 @@ def smooth_gate(x, threshold, sharpness):
 
 
 class Trainer:
-    def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None):
+    def __init__(self, optimizer, loss_function, cfg, steps_in_epoch: int = 0, scheduler=None, warmup_steps: int = 0):
 
         self.check = cfg.check
         self.device = torch.device("cuda")
@@ -51,7 +51,6 @@ class Trainer:
         self.scheduler = scheduler
         self.roll_slices = cfg.data.roll_slices
         self.important_slices_only = cfg.data.important_slices_only
-        self.update_freq = cfg.training.weight_update_freq
         self.slice_level_supervision = cfg.data.slice_level_supervision
         self.classification = cfg.model.classification
         self.num_heads = cfg.model.num_heads
@@ -72,6 +71,9 @@ class Trainer:
         else:
             self.attention = False
 
+        self.global_steps = 0
+        self.warmup_steps = warmup_steps
+
         if cfg.data.no_lungs:
             path = '/scratch/project_465001111/ct_data/kidney/slice_statistics.csv'
             self.statistics = pd.read_csv(path)
@@ -79,7 +81,6 @@ class Trainer:
                 self.scan_names = get_percentage_of_scans_from_dataframe(self.statistics, self.slice_level_supervision)
         else:
             path = "/users/arivajoo/GPAI/slice_statistics/"
-            # path = "/gpfs/space/projects/BetterMedicine/joonas/kidney/slice_statistics/"
             self.statistics = pd.concat([pd.read_csv(path + "slice_info_kits_kirc_train.csv"),
                                          pd.read_csv(path + "slice_info_tuh_train.csv"),
                                          pd.read_csv(path + "slice_info_tuh_test_for_train.csv"),
@@ -96,9 +97,7 @@ class Trainer:
     def run_one_epoch(self, model, data_loader, epoch: int, train: bool = True, local_rank=0):
 
         results = defaultdict(int)  # all metrics start at zero
-
         step = 0
-
         nr_of_batches = len(data_loader)
 
         disable_tqdm = False if local_rank == 0 else True
@@ -150,7 +149,8 @@ class Trainer:
                 total_loss = 0
                 path = meta[2][0]  # was 4 before (4-->2)
                 source_label = get_source_label(path)
-                out = model.forward(data, label=bag_label, scan_end=num_patches, source_label=source_label, patch_centers=patch_centers)
+                out = model.forward(data, label=bag_label, scan_end=num_patches, source_label=source_label,
+                                    patch_centers=patch_centers)
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
@@ -191,7 +191,7 @@ class Trainer:
                     results["h_loss"] += hloss.item()
                     results["dist_loss"] += norm_loss.item()
 
-                    total_loss += depth_loss
+                    total_loss += 0.1*depth_loss
                 if self.attention:
                     # attention_scores = out['attention_weights'].flatten()
                     # attn_loss = ATTENTION_loss(attention_scores, z_spacing=meta[2][2],
@@ -209,9 +209,11 @@ class Trainer:
                         # entropy = 0 * -0.005 * (head_attention * torch.log(head_attention + 1e-12)).sum(dim=0) / N
                         # ent_loss += 0.5 * entropy
                     attention_matrix = attention_scores[:, 0] * attention_scores[:, 1].reshape(-1, 1)
-                    z_bounding_loss = ATTENTION_loss(summed_attention, patch_centers, z_only=True, attention_matrix=attention_matrix)
-                    total_loss += 400 * (a_loss + z_bounding_loss)  # + entropy) from 1000 --> 400
-                    results["attention_loss"] += a_loss
+                    z_bounding_loss = ATTENTION_loss(summed_attention, patch_centers, z_only=True,
+                                                     attention_matrix=attention_matrix)
+                    gated_a_loss = a_loss*smooth_gate(a_loss,0.0002,20000)
+                    total_loss += 300 * (gated_a_loss + z_bounding_loss)  # + entropy) from 1000 --> 400
+                    results["attention_loss"] += gated_a_loss
                     results["z_bound"] = + z_bounding_loss
                     if self.num_heads > 1:
                         diff_loss = torch.sum(attention_scores[:, 0] * attention_scores[:, 1])
@@ -221,22 +223,27 @@ class Trainer:
                         total_loss += gated_diff_loss
                         results["difference_loss"] += gated_diff_loss
 
-                total_loss /= self.update_freq
-
             if train:
                 time_backprop = time.time()
                 scaler.scale(total_loss).backward()
                 backprop_time = time.time() - time_backprop
                 backprop_times.append(backprop_time)
-                if (step) % self.update_freq == 0 or (step) == len(data_loader):
 
-                    scaler.step(self.optimizer)
-                    scaler.update()
-                    if self.scheduler:
-                        self.scheduler.step()
-                    self.optimizer.zero_grad(set_to_none=True)
+                scaler.step(self.optimizer)
+                scaler.update()
+                self.optimizer.zero_grad(set_to_none=True)
 
-            results["loss"] += total_loss.item() * self.update_freq
+                if self.global_steps < self.warmup_steps:
+                    # Linear warmup
+                    scale = (self.global_steps + 1) / float(max(1, self.warmup_steps))
+                    for g in self.optimizer.param_groups:
+                        g['lr'] = g['initial_lr'] * scale
+                else:
+                    # Cosine schedule
+                    self.scheduler.step()
+                self.global_steps += 1
+
+            results["loss"] += total_loss.item()
 
             if step >= 6 and self.check:
                 break
@@ -279,7 +286,5 @@ class Trainer:
 
         if self.attention:
             print_multi_gpu(f"Attention loss: {round(results['attention_loss'].item(), 6)}", local_rank)
-
-        # print(f"Attention mAP for kidney region all scans: {round(np.mean(attention_scores['all_scans'][0]), 3)}")
 
         return results

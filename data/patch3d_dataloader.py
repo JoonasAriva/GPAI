@@ -276,8 +276,8 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         elif self.sample == "grid":
             patch_centers = []
             for d in range(depth_buffer, D - depth_buffer, patch_size[0]*9):
-                for h in range(edge_buffer, H - edge_buffer, patch_size[1]//2):
-                    for w in range(edge_buffer, W - edge_buffer, patch_size[2]//2):
+                for h in range(edge_buffer, H - edge_buffer, int(patch_size[1]*2/3)):
+                    for w in range(edge_buffer, W - edge_buffer, int(patch_size[2]*2/3)):
                         patch_centers.append([[d, h, w]])
             patch_centers = np.concatenate(patch_centers)
 

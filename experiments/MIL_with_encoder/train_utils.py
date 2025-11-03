@@ -177,7 +177,7 @@ def pick_model(cfg: DictConfig):
     return model
 
 
-def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch, adv_optimizer=None):
+def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch, adv_optimizer=None, warmup_steps=0):
     if cfg.experiment == "depth":
         loss_function = DepthLossV2(step=0.05).cuda()  # was 0.01 # then 0.1, but it might be too sparse
         trainer = TrainerDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function,
@@ -210,7 +210,7 @@ def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch, adv_optimizer=None):
     else:
         loss_function = torch.nn.BCEWithLogitsLoss().cuda()
         trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
-                          steps_in_epoch=steps_in_epoch)
+                          steps_in_epoch=steps_in_epoch, warmup_steps=warmup_steps)
     return trainer
 
 
@@ -218,7 +218,7 @@ def prepare_optimizer(cfg, model):
     if 'compass_twostage' in cfg.experiment:
 
         boundary_name = ['depth_range']
-        adversary_name = ['module.adversary_classifier.weight', 'module.ladversary_classifier.bias']
+        adversary_name = ['module.adversary_classifier.weight', 'module.adversary_classifier.bias']
 
         boundary_params = [param for name, param in model.named_parameters() if name in boundary_name]
 
@@ -239,7 +239,24 @@ def prepare_optimizer(cfg, model):
             optimizer_adv = optim.Adam(adversary_params, lr=cfg.training.learning_rate, betas=(0.9, 0.999))
             return optimizer, optimizer_adv
     else:
-        optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
-                               weight_decay=cfg.training.weight_decay)
+
+        # separate params
+        backbone_params = []
+        new_params = []
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if name.startswith("model."):  # adjust to your naming convention
+                backbone_params.append(p)
+            else:
+                new_params.append(p)
+
+        optimizer = optim.AdamW([
+            {'params': backbone_params, 'lr': 5e-5, 'weight_decay': cfg.training.weight_decay},
+            {'params': new_params, 'lr': 1e-4, 'weight_decay': cfg.training.weight_decay},
+        ], betas=(0.9, 0.999), eps=1e-8)
+
+        # optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
+        #                        weight_decay=cfg.training.weight_decay)
 
     return optimizer

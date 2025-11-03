@@ -13,9 +13,6 @@ from gradient_reversal import GradientReversal
 
 # from experiments.MIL_with_encoder.models import Attention
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 
 class LocalNeighborhoodAttention(nn.Module):
     """
@@ -23,6 +20,7 @@ class LocalNeighborhoodAttention(nn.Module):
     and produce an enriched feature vector of same dimension.
     Works on a *single scan* at a time (batching across scans is straightforward).
     """
+
     def __init__(self, feat_dim, hidden_dim=None, k=8, attn_dropout=0.0):
         super().__init__()
         self.feat_dim = feat_dim
@@ -65,19 +63,19 @@ class LocalNeighborhoodAttention(nn.Module):
         H_neighbors = torch.gather(H.unsqueeze(0).expand(N, -1, -1), 1, knn_idx_exp)  # (N, k, C)
 
         # 3) compute q (for each center), k,v for neighbors
-        Q = self.q_proj(H)                     # (N, hidden)
-        K = self.k_proj(H_neighbors)           # (N, k, hidden)
-        V = self.v_proj(H_neighbors)           # (N, k, C)
+        Q = self.q_proj(H)  # (N, hidden)
+        K = self.k_proj(H_neighbors)  # (N, k, hidden)
+        V = self.v_proj(H_neighbors)  # (N, k, C)
 
         # 4) attention scores: Q (N, hidden) vs K (N, k, hidden)
         # expand Q to (N, 1, hidden)
-        Q = Q.unsqueeze(1)                 # (N,1,hidden)
+        Q = Q.unsqueeze(1)  # (N,1,hidden)
         attn_logits = torch.sum(Q * K, dim=-1) * self.scale  # (N, k)
         attn = F.softmax(attn_logits, dim=-1)  # (N, k)
         attn = self.dropout(attn)
 
         # 5) weighted sum over neighbors -> (N, C)
-        attn_exp = attn.unsqueeze(-1)          # (N, k, 1)
+        attn_exp = attn.unsqueeze(-1)  # (N, k, 1)
         H_enriched = torch.sum(attn_exp * V, dim=1)  # (N, C)
 
         # 6) final projection + residual (optionally)
@@ -321,21 +319,27 @@ class ResNetTwoHeads(nn.Module):
         })
         return out
 
+
 class ResnetTwoHeadsKNN(ResNetTwoHeads):
     def __init__(self, num_attention_heads=2, instnorm=False, resnet_type="34"):
         super().__init__(num_attention_heads=num_attention_heads, instnorm=instnorm, resnet_type=resnet_type)
         self.local_attn = LocalNeighborhoodAttention(feat_dim=512, k=8)
+
     def calc_manhattan_distances_in_3d(self, matrix):
         return matrix.reshape(-1, 1, 3) - matrix.float()
+
     def calculate_patch_distances(self, patch_centers):
         voxel_spacing = torch.tensor([2.0, 0.84, 0.84]).cuda()
         scaled_coordinates = patch_centers * voxel_spacing
         real_distances = self.calc_manhattan_distances_in_3d(scaled_coordinates).float().cuda()
         dist_norm = torch.norm(real_distances, dim=2)
         return dist_norm
-    def forward(self, x, scan_end, patch_centers, **kwargs):
 
+    def forward(self, x, scan_end, patch_centers, **kwargs):
         with torch.no_grad():
+
+            patch_centers = patch_centers[:,:scan_end,:]
+
             dist_norm = self.calculate_patch_distances(patch_centers)
 
         out = dict()
@@ -355,10 +359,13 @@ class ResnetTwoHeadsKNN(ResNetTwoHeads):
         left_logit, right_logit = Y_logits[0], Y_logits[1]
         left_score, right_score = Y_probs[0], Y_probs[1]
         scan_prob = 1 - (1 - left_score) * (1 - right_score)
-        Y_hat = torch.ge(scan_prob, 0.5).float()
 
         stacked = torch.cat([left_logit, right_logit, left_logit + right_logit], dim=0).view(-1, 3)
         scan_logit = torch.logsumexp(stacked, dim=1).view(-1, 1)
+
+        #scan_logit = torch.mean(Y_logits, dim=0, keepdim=True)
+        #scan_prob = torch.sigmoid(scan_logit)
+        Y_hat = torch.ge(scan_prob, 0.5).float()
 
         out["all_attention"] = F.softmax(attention_maps, dim=0)
 
@@ -372,6 +379,7 @@ class ResnetTwoHeadsKNN(ResNetTwoHeads):
             "individual_predictions": self.classifier(H),
         })
         return out
+
 
 class OrganModel(nn.Module):
 

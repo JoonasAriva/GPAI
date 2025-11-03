@@ -9,7 +9,6 @@ from pathlib import Path
 import hydra
 import numpy as np
 import torch
-import torch.optim as optim
 import wandb
 from omegaconf import OmegaConf, DictConfig
 from torch.distributed import init_process_group
@@ -128,17 +127,23 @@ def main(cfg: DictConfig):
         optimizer = prepare_optimizer(cfg, model)
 
     number_of_epochs = cfg.training.epochs
-    scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=int(
-        number_of_epochs * steps_in_epoch / cfg.training.weight_update_freq),
-                                              pct_start=0.2, max_lr=[cfg.training.learning_rate,
-                                                                     cfg.training.learning_rate * 10] if cfg.experiment == "compass_twostage" else cfg.training.learning_rate)
+
+    total_steps = number_of_epochs * steps_in_epoch
+    warmup_steps = int(0.1 * total_steps)  # 10% warmup
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=total_steps - warmup_steps, eta_min=1e-7, last_epoch=-1
+    )
+    # scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=int(
+    #     number_of_epochs * steps_in_epoch / cfg.training.weight_update_freq),
+    #                                           pct_start=0.2, max_lr=[cfg.training.learning_rate,
+    #                                                                  cfg.training.learning_rate * 10] if cfg.experiment == "compass_twostage" else cfg.training.learning_rate)
     if "checkpoint" in cfg.keys():
         optimizer.load_state_dict(torch.load(os.path.join(cfg.checkpoint, 'current_optimizer.pth')))
         scheduler.load_state_dict(torch.load(os.path.join(cfg.checkpoint, 'current_scheduler.pth')))
-    # summary(model,input_size=(300,3,512,512))
-
     trainer = pick_trainer(cfg, optimizer, scheduler, steps_in_epoch,
-                           adv_optimizer=optimizer_adv if cfg.experiment == "compass_twostage_adv" else None)
+                           adv_optimizer=optimizer_adv if cfg.experiment == "compass_twostage_adv" else None,
+                           warmup_steps=warmup_steps)
 
     if not cfg.check and local_rank == 0:
         experiment = wandb.init(project=proj_name, anonymous='must')

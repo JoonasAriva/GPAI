@@ -5,11 +5,11 @@ hydra:
 experiment: Attention
 
 training:
-  epochs: 90
+  epochs: 80
   learning_rate: 1e-4
   weight_decay: 5e-4
   weight_update_freq: 1
-  seed: 1
+  seed: 2
   multi_gpu: True
 
 model:
@@ -24,7 +24,7 @@ model:
   pretrained: True
   relevancy_head: False
   progressive_sigmoid_scaling: True
-  depth: False
+  depth: True
   classification: True
   frozen_backbone: False
   dann: False
