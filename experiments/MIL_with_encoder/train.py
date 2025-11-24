@@ -60,7 +60,8 @@ def main(cfg: DictConfig):
 
     train_loader, test_loader = prepare_dataloader(cfg)
 
-    steps_in_epoch = 480  # with pärnu and kirc and kits its 1250, if just TUH, its 480
+    # steps_in_epoch = 480  # with pärnu and kirc and kits its 1250, if just TUH, its 480
+    steps_in_epoch = 1200
     steps_in_epoch = steps_in_epoch // n_gpus
     if cfg.data.dataloader == 'kidney_pasted':
         steps_in_epoch = 478 // n_gpus
@@ -88,14 +89,26 @@ def main(cfg: DictConfig):
         # sd = torch.load(
         #     '/users/arivajoo/results/depth/train/resnetdepth/kidney_real/2025-07-14/11-17-49/checkpoints/best_model.pth',
         #     map_location='cuda:0')
-        # for 2d patch version
-        sd = torch.load(
-            '/users/arivajoo/results/patches2D_depth/train/depth_patches2D/kidney_real/2025-09-17/14-50-05/checkpoints/best_model.pth',
-            map_location='cuda:0')
-        # for 3d model:
-        # sd = torch.load('/users/arivajoo/results/patches3D_depth/train/depth_patches3D/kidney_real/2025-10-14/00-03-33/checkpoints/best_model.pth')
+        if cfg.model.model_type == '2D':
+            sd = torch.load(
+                '/users/arivajoo/results/patches2D_depth/train/depth_patches2D/kidney_real/2025-11-14/11-18-30/checkpoints/best_model.pth',
+                map_location='cuda:0')
+        elif cfg.model.model_type == '3D':
+            sd = torch.load(
+                '/users/arivajoo/results/patches3D_depth/train/depth_patches3D/kidney_real/2025-11-13/15-32-42/checkpoints/best_model.pth',
+                map_location='cuda:0')
         new_sd = {key.replace("module.", ""): value for key, value in sd.items()}
-        model.load_state_dict(state_dict=new_sd, strict=False)
+        missing, unexpected = model.load_state_dict(state_dict=new_sd, strict=False)
+
+        if missing:
+            print("Missing keys:")
+            for k in missing:
+                print(f"  - {k}")
+        if unexpected:
+            print("Unexpected keys:")
+            for k in unexpected:
+                print(f"  - {k}")
+
         logging.info('Loaded depth pretrained model')
 
     # if you need to continue training
@@ -177,8 +190,8 @@ def main(cfg: DictConfig):
         if cfg.training.multi_gpu == True:
             epoch_results = reduce_results_dict(epoch_results)
 
-        # test_loss = epoch_results["class_loss_test"]
-        test_loss = epoch_results["loss_test"]
+        test_f1 = epoch_results["f1_score_test"]
+        # test_loss = epoch_results["loss_test"]
 
         # epoch_results = reduce_results_dict(epoch_results)
         # print_multi_gpu(epoch_results, local_rank)
@@ -188,12 +201,13 @@ def main(cfg: DictConfig):
 
         Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
 
-        if test_loss < best_loss:
+        if test_f1 > best_f1:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), str(dir_checkpoint / 'best_model.pth'))
-            log_multi_gpu(f"Best new model at epoch {epoch} (lowest test cls loss: {test_loss})!", local_rank)
+            log_multi_gpu(f"Best new model at epoch {epoch} (lowest test f1 score: {test_f1})!", local_rank)
 
-            best_loss = test_loss
+            # best_loss = test_loss
+            best_f1 = test_f1
             best_epoch = epoch
             not_improved_epochs = 0
 

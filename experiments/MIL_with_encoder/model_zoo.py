@@ -6,7 +6,7 @@ import torch.nn.functional as F
 from positional_encodings.torch_encodings import PositionalEncoding1D
 from torch import Tensor as T
 from torchvision.models import resnet
-from torchvision.models import resnet18, ResNet18_Weights, resnet34, ResNet34_Weights
+from torchvision.models import resnet18, ResNet18_Weights, resnet34, ResNet34_Weights, resnet50, ResNet50_Weights
 
 from gradient_reversal import GradientReversal
 
@@ -128,6 +128,16 @@ class AttentionHeadV3(nn.Module):
 
 class ResNetAttentionV3(nn.Module):
 
+    def calc_manhattan_distances_in_3d(self, matrix):
+        return matrix.reshape(-1, 1, 3) - matrix.float()
+
+    def calculate_patch_distances(self, patch_centers):
+        voxel_spacing = torch.tensor([2.0, 0.84, 0.84]).cuda()
+        scaled_coordinates = patch_centers * voxel_spacing
+        real_distances = self.calc_manhattan_distances_in_3d(scaled_coordinates).float().cuda()
+        dist_norm = torch.norm(real_distances, dim=2)
+        return dist_norm
+
     def __init__(self, neighbour_range=0, num_attention_heads=1, instnorm=False, ghostnorm=False, resnet_type="18",
                  frozen_backbone: bool = False, GRL: bool = False):
         super().__init__()
@@ -140,16 +150,6 @@ class ResNetAttentionV3(nn.Module):
         print("Using neighbour attention with a range of ", self.neighbour_range)
         print("# of attention heads: ", self.num_attention_heads)
 
-        self.L = 512 * 1 * 1
-        self.D = 128
-        self.K = 1
-        self.resnet_type = resnet_type
-
-        # self.adaptive_pooling = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)))
-        self.attention_heads = nn.ModuleList([
-            AttentionHeadV3(self.L, self.D, self.K) for i in range(self.num_attention_heads)])
-
-        self.classifier = nn.Sequential(nn.Linear(512, 1))
         self.sig = nn.Sigmoid()
         if ghostnorm:
             if resnet_type == "18":
@@ -170,9 +170,12 @@ class ResNetAttentionV3(nn.Module):
             elif resnet_type == "34":
                 self.model = resnet.ResNet(resnet.BasicBlock, [3, 4, 6, 3], norm_layer=MyGroupNorm)
                 sd = resnet34(weights=ResNet34_Weights.DEFAULT).state_dict()
+            elif resnet_type == "50":
+                self.model = resnet.ResNet(resnet.Bottleneck, [3, 4, 6, 3], norm_layer=MyGroupNorm)
+                sd = resnet50(weights=ResNet50_Weights.DEFAULT).state_dict()
 
             self.model.load_state_dict(sd, strict=False)
-            self.model.fc = nn.Identity()
+
         else:
             if resnet_type == "18":
                 model = resnet18(weights=ResNet18_Weights.DEFAULT)
@@ -182,7 +185,6 @@ class ResNetAttentionV3(nn.Module):
         # modules = list(model.children())[:-2]
         # self.backbone = nn.Sequential(*modules)
 
-        self.cls_head = nn.Linear(512, 3)  # for depth predicitng
         if self.frozen_backbone:
             for param in self.model.parameters():
                 param.requires_grad = False
@@ -191,13 +193,34 @@ class ResNetAttentionV3(nn.Module):
             self.grad_reversal = GradientReversal(1)
             self.grl_classifier = nn.Sequential(nn.Linear(512, 1))
 
-    def forward(self, x, scan_end, cam=False, **kwargs):
+        self.num_features = self.model.fc.in_features
+        self.model.fc = nn.Identity()
+
+        self.L = self.num_features
+        self.D = 128
+        self.K = 1
+        self.resnet_type = resnet_type
+
+        # self.adaptive_pooling = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)))
+        self.attention_heads = nn.ModuleList([
+            AttentionHeadV3(self.L, self.D, self.K) for i in range(self.num_attention_heads)])
+        self.cls_head = nn.Linear(self.num_features, 3)  # for depth predicitng
+        self.classifier = nn.Sequential(nn.Linear(self.num_features, 1))
+
+        self.local_attn = LocalNeighborhoodAttention(feat_dim=self.num_features, k=4)
+
+    def forward(self, x, scan_end, patch_centers, **kwargs):
+        with torch.no_grad():
+            patch_centers = patch_centers[:, :scan_end, :]
+
+            dist_norm = self.calculate_patch_distances(patch_centers)
+
         out = dict()
         H = self.model(x[:scan_end])
-        # H = self.adaptive_pooling(H)
-        H = H.view(-1, 512 * 1 * 1)
+        H = H.view(-1, self.num_features)
+        H_enriched = self.local_attn(H, dist_norm)
 
-        attention_maps = [head(H) for head in self.attention_heads]
+        attention_maps = [head(H_enriched) for head in self.attention_heads]
         attention_maps = torch.cat(attention_maps, dim=1)
 
         unnorm_A = attention_maps.view(self.num_attention_heads, -1)
@@ -205,7 +228,7 @@ class ResNetAttentionV3(nn.Module):
         A = F.softmax(unnorm_A, dim=1)
         opposite_A = F.softmax(-unnorm_A, dim=1)
 
-        all_agg_vectors = torch.einsum('tb,bf->tf', A, H)  # (num_heads, feature_dim)
+        all_agg_vectors = torch.einsum('tb,bf->tf', A, H_enriched)  # (num_heads, feature_dim)
 
         # M = all_agg_vectors.reshape(1, -1)
 
@@ -221,17 +244,13 @@ class ResNetAttentionV3(nn.Module):
             opposite_Y_logits = self.grl_classifier(self.grad_reversal(opposite_agg_vectors))
             out["opposite_Y_logits"] = opposite_Y_logits
 
-        # scores = Y_probs.chunk(2, dim=1)
-        # print(scores)
-        # left_score = scores[:,0]
-        # right_score = scores[:,1]
-        # scan_prob = 1 - (1 - left_score) * (1 - right_score)
         Y_hat = torch.ge(Y_probs, 0.5).float()
 
         out['predictions'] = Y_hat
         out['scores'] = Y_logits
         out['attention_weights'] = A
         out['unnorm_A'] = unnorm_A
+        out['vectors'] = H
 
         preds = self.cls_head(H)
         out['depth_scores'] = preds
@@ -325,6 +344,13 @@ class ResnetTwoHeadsKNN(ResNetTwoHeads):
         super().__init__(num_attention_heads=num_attention_heads, instnorm=instnorm, resnet_type=resnet_type)
         self.local_attn = LocalNeighborhoodAttention(feat_dim=512, k=8)
 
+        self.classifier = nn.Sequential(
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, 1)
+        )
+
     def calc_manhattan_distances_in_3d(self, matrix):
         return matrix.reshape(-1, 1, 3) - matrix.float()
 
@@ -337,8 +363,7 @@ class ResnetTwoHeadsKNN(ResNetTwoHeads):
 
     def forward(self, x, scan_end, patch_centers, **kwargs):
         with torch.no_grad():
-
-            patch_centers = patch_centers[:,:scan_end,:]
+            patch_centers = patch_centers[:, :scan_end, :]
 
             dist_norm = self.calculate_patch_distances(patch_centers)
 
@@ -360,11 +385,11 @@ class ResnetTwoHeadsKNN(ResNetTwoHeads):
         left_score, right_score = Y_probs[0], Y_probs[1]
         scan_prob = 1 - (1 - left_score) * (1 - right_score)
 
-        stacked = torch.cat([left_logit, right_logit, left_logit + right_logit], dim=0).view(-1, 3)
-        scan_logit = torch.logsumexp(stacked, dim=1).view(-1, 1)
+        # stacked = torch.cat([left_logit, right_logit, left_logit + right_logit], dim=0).view(-1, 3)
+        # scan_logit = torch.logsumexp(stacked, dim=1).view(-1, 1)
 
-        #scan_logit = torch.mean(Y_logits, dim=0, keepdim=True)
-        #scan_prob = torch.sigmoid(scan_logit)
+        scan_logit = torch.mean(Y_logits, dim=0, keepdim=True)
+        scan_prob = torch.sigmoid(scan_logit)
         Y_hat = torch.ge(scan_prob, 0.5).float()
 
         out["all_attention"] = F.softmax(attention_maps, dim=0)
@@ -377,6 +402,8 @@ class ResnetTwoHeadsKNN(ResNetTwoHeads):
             "all_attention": F.softmax(attention_maps, dim=0),
             "depth_scores": self.cls_head(H),
             "individual_predictions": self.classifier(H),
+            "left_logit": left_logit,
+            "right_logit": right_logit,
         })
         return out
 

@@ -2,10 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from monai.networks.nets import resnet
-from torchvision.models import resnet18, ResNet18_Weights, resnet34, ResNet34_Weights, resnet
-from monai.networks.nets import resnet18, resnet34
 
-
+from torchvision.models import resnet18, ResNet18_Weights, resnet34, ResNet34_Weights, resnet, resnet50, \
+    ResNet50_Weights
+from monai.networks.nets import resnet18, resnet34, resnet50
 from gradient_reversal import GradientReversal
 from model_zoo import MyGroupNorm, AttentionHeadV3
 
@@ -14,8 +14,8 @@ class ResNet3DDepth(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.backbone = resnet18(pretrained=False, spatial_dims=3, n_input_channels=1, num_classes=3)
-
+        self.backbone = resnet50(pretrained=False, spatial_dims=3, n_input_channels=1, num_classes=3)
+        print("using resnet50")
         # --- 2. Strip off the final classifier to get feature vectors ---
         # The final layer is model.fc
         num_features = self.backbone.fc.in_features
@@ -31,7 +31,7 @@ class ResNet3DDepth(nn.Module):
 
 class ResNet3D(nn.Module):
 
-    def __init__(self, num_attention_heads=1, resnet_type="18",
+    def __init__(self, num_attention_heads=1, resnet_type="50",
                  frozen_backbone: bool = False, GRL: bool = False):
         super().__init__()
         self.num_attention_heads = num_attention_heads
@@ -40,27 +40,30 @@ class ResNet3D(nn.Module):
 
         print("# of attention heads: ", self.num_attention_heads)
 
-        self.L = 512 * 1 * 1
-        self.D = 128
-        self.K = 1
         self.resnet_type = resnet_type
 
         # self.adaptive_pooling = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)))
-        self.attention_heads = nn.ModuleList([
-            AttentionHeadV3(self.L, self.D, self.K) for i in range(self.num_attention_heads)])
-
-        self.classifier = nn.Sequential(nn.Linear(512, 1))
-        self.sig = nn.Sigmoid()
 
         if resnet_type == "18":
-
             self.backbone = resnet18(pretrained=False, spatial_dims=3, n_input_channels=1, num_classes=3)
         elif resnet_type == "34":
             self.backbone = resnet34(pretrained=False, spatial_dims=3, n_input_channels=1, num_classes=3)
+        elif resnet_type == "50":
+            self.backbone = resnet50(pretrained=False, spatial_dims=3, n_input_channels=1, num_classes=3)
 
+        self.num_features = self.backbone.fc.in_features
+        self.classifier = nn.Sequential(nn.Linear(self.num_features, 1))
+        self.sig = nn.Sigmoid()
         self.backbone.fc = nn.Identity()
 
-        self.cls_head = nn.Linear(512, 3)  # for depth predicitng
+        self.cls_head = nn.Linear(self.num_features, 3)  # for depth predicitng
+
+        self.L = self.num_features
+        self.D = 128
+        self.K = 1
+
+        self.attention_heads = nn.ModuleList([
+            AttentionHeadV3(self.L, self.D, self.K) for i in range(self.num_attention_heads)])
 
         if self.grl:
             self.grad_reversal = GradientReversal(1)
@@ -69,7 +72,7 @@ class ResNet3D(nn.Module):
     def forward(self, x, scan_end, cam=False, **kwargs):
         out = dict()
         H = self.backbone(x[:scan_end])
-        H = H.view(-1, 512 * 1 * 1)
+        H = H.view(-1, self.num_features * 1 * 1)
 
         attention_maps = [head(H) for head in self.attention_heads]
         attention_maps = torch.cat(attention_maps, dim=1)
@@ -144,10 +147,10 @@ class ResNetDepth2dPatches(nn.Module):
         if self.use_transformer_layers:
             self.transformer = TransformerBlock(dim=512, n_heads=8, mlp_ratio=1)
 
-        self.model = resnet.ResNet(resnet.BasicBlock, [3, 4, 6, 3], norm_layer=MyGroupNorm)
-        sd = resnet34(weights=ResNet34_Weights.DEFAULT).state_dict()
+        self.model = resnet.ResNet(resnet.Bottleneck, [3, 4, 6, 3], norm_layer=MyGroupNorm)
+        sd = resnet50(weights=ResNet50_Weights.DEFAULT).state_dict()
         self.model.load_state_dict(sd, strict=False)
-
+        print("using resnet50!")
         num_features = self.model.fc.in_features
 
         self.cls_head = nn.Linear(num_features, 3)
@@ -155,9 +158,9 @@ class ResNetDepth2dPatches(nn.Module):
 
     def forward(self, x):
         feats = self.model(x)
-        attn_output, attn_weights = self.transformer(feats)
+        # attn_output, attn_weights = self.transformer(feats)
         preds = self.cls_head(feats)
-        return preds, attn_weights
+        return preds
 
 
 class TransAttention(nn.Module):

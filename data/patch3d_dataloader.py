@@ -2,13 +2,14 @@ import sys
 
 import nibabel as nib
 import numpy as np
+import raster_geometry as rg
 import torch.nn.functional as F
 from monai.transforms import *
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
 sys.path.append('/users/arivajoo/GPAI/data')
 from data_utils import get_kidney_datasets, set_orientation_nib, \
-    get_pasted_small_dateset, normalize_scan_new, CompassFilter, remove_table_3d
+    get_pasted_small_dateset, CompassFilter, remove_table_3d, normalize_scan_per_patch
 
 import torch
 
@@ -110,6 +111,20 @@ def resize_array(array, current_spacing, target_spacing):
     return resized_array
 
 
+def add_sphere(scan, synth_coords, rng, simplified=False):
+    radius = rng.integers(25, 30)  # 15-20
+
+    relative_coords = tuple(round(i / j, 3) for i, j in zip(synth_coords, scan.shape))
+    sphere_mask = rg.sphere(scan.shape, radius, (relative_coords))
+
+    gaussian_noise_circle = torch.FloatTensor(np.ones_like(scan) * 1000)
+    scan[sphere_mask] = gaussian_noise_circle[sphere_mask]
+    if simplified:
+        gaussian_noise = torch.FloatTensor(np.random.rand(*scan.shape) * 20)
+        scan[~sphere_mask] = gaussian_noise[~sphere_mask]
+    return scan
+
+
 class KidneyDataloader3D(torch.utils.data.Dataset):
     def __init__(self, type: str = "train", nth_slice: int = 3,
                  augmentations: callable = None, plane: str = 'axial',
@@ -117,7 +132,8 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
                  pasted_experiment: bool = False,
                  TUH_only: bool = False,
                  compass_filtering: bool = False, model_type: str = '3D',
-                 patch_size: tuple = (1, 150, 150), nr_of_patches: int = 100, sample: str = 'uniform', **kwargs):
+                 patch_size: tuple = (1, 150, 150), nr_of_patches: int = 100, sample: str = 'grid',
+                 spheres: bool = False, **kwargs):
         super().__init__()
         self.augmentations = augmentations
         self.nth_slice = nth_slice
@@ -127,6 +143,7 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         self.patch_size = patch_size
         self.compass_filtering = compass_filtering
         self.sample = sample
+        self.spheres = spheres
         if compass_filtering:
             self.COMPASS = CompassFilter(
                 dataframe_path_train='/users/arivajoo/GPAI/experiments/MIL_with_encoder/train_compass_scores.csv',
@@ -137,8 +154,11 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
 
         if pasted_experiment and type == 'train':
             control, tumor = get_pasted_small_dateset()
-        else:
-            control, tumor = get_kidney_datasets(type, no_lungs=no_lungs, TUH_only=TUH_only)
+        # elif self.spheres:
+        #     control = get_TUH_control(type)
+        #     tumor = []
+        # else:
+        control, tumor = get_kidney_datasets(type, no_lungs=no_lungs, TUH_only=TUH_only)
 
         control_labels = [[False]] * len(control)
         self.controls = len(control)
@@ -168,6 +188,9 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         self.exact_path = None
         self.nr_of_patches = nr_of_patches
 
+        self.mode = "coarse"
+        self.cached_coords = {}
+
     def pick_sample_frequency(self, nr_of_original_slices: int, nth_slice: int):
 
         if nth_slice == 1:
@@ -190,109 +213,193 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
             patches.extend(slice_patches)
         return np.stack(patches, axis=0)  # Shape: (total_patches, C, n, n)
 
+    def set_refinement_targets(self, top_centers, volume):
+        """Cache high-attention centers for refinement sampling."""
+        self.top_centers = top_centers
+        self.mode = "refined"
+        self.x = volume
+
+    def sample_patch_coordinates(self, x, sphere_options):
+
+        D, H, W = x.shape[-3:]
+        edge_buffer = 70
+        if self.kind == "2D":
+            depth_buffer = 1
+            patch_size = (1, 128, 128)
+        else:
+            if x.shape[1] > 65:
+                depth_buffer = 33
+                patch_size = (64, 128, 128)
+            else:
+                patch_size = (x.shape[1] - 2, 128, 128)
+                depth_buffer = (x.shape[1] - 1) // 2
+
+        if sphere_options is not None and self.sample != 'grid':
+            sphere_options = np.array(sphere_options)
+            idxs = np.random.randint(len(sphere_options), size=self.nr_of_patches * 8, dtype=int)
+
+            coordinates = sphere_options[idxs]
+
+            offsets = np.random.uniform(np.array([0, -64, -64]),
+                                        np.array([0, 64, 64]),
+                                        size=np.array([self.nr_of_patches * 8, 3])).astype(int)
+
+            coordinates = coordinates + offsets
+            possible_coords = []
+
+            for coord in coordinates:
+                d, h, w = coord
+                if d > D - depth_buffer or h > H - edge_buffer or w > W - edge_buffer:
+                    continue
+                if d < depth_buffer or h < edge_buffer or w < edge_buffer:
+                    continue
+                possible_coords.append([coord])
+            coordinates = np.concatenate(possible_coords)[:self.nr_of_patches]
+
+            return coordinates, patch_size
+
+        if self.mode == "coarse":
+            if self.sample == "uniform":
+                patch_centers = np.random.uniform(np.array([depth_buffer, edge_buffer, edge_buffer]),
+                                                  np.array([D - depth_buffer, H - edge_buffer, W - edge_buffer]),
+                                                  size=np.array([self.nr_of_patches, 3]))
+                patch_centers = np.round(patch_centers).astype(int)
+
+
+            elif self.sample == "grid":
+                patch_centers = []
+                for d in range(depth_buffer, D - depth_buffer, patch_size[0] * 9):
+                    for h in range(edge_buffer, H - edge_buffer, int(patch_size[1] * 2 / 3)):
+                        for w in range(edge_buffer, W - edge_buffer, int(patch_size[2] * 2 / 3)):
+                            patch_centers.append([[d, h, w]])
+                patch_centers = np.concatenate(patch_centers)
+
+        if self.mode == "refined":
+            all_neighbors = []
+            radius = 30
+            n_samples = 50
+
+            for c in self.top_centers:
+                # Sample uniform offsets around the center
+                z, y, x = c
+                min_bounds = np.array(
+                    [-min(radius, max(z - depth_buffer, 0)), -min(radius, max(y - edge_buffer, 0)),
+                     -min(radius, max(x - edge_buffer, 0))])
+                max_bounds = np.array(
+                    [min(radius, max(D - depth_buffer - z, 0)), min(radius, max((H - edge_buffer - y, 0))),
+                     min(radius, max(W - edge_buffer - x, 0))])
+
+                offsets = np.random.uniform(min_bounds, max_bounds,
+                                            size=np.array([n_samples, 3]))
+
+                neighbors = torch.squeeze(c) + offsets
+                all_neighbors.append(neighbors)
+                patch_centers = torch.cat(all_neighbors, dim=0)
+
+        return patch_centers, patch_size
+
     def __len__(self):
         # a DataSet must know its size
         return len(self.img_paths)
 
     def __getitem__(self, index):
 
-        if self.exact_path is None:
+        if self.mode == "coarse":
             path = self.img_paths[index]
+
+            match = path.split('/')[-1]
+
+            case_id = match.replace("_0000.nii", ".nii")
+            y = torch.Tensor(self.labels[index])
+            x = nib.load(path)
+
+            x = set_orientation_nib(x)
+            spacings = x.header.get_zooms()  # [2]-for only z, currently changed to take all spacings | h,w,d (order ?)
+            x = x.get_fdata()
+            if self.spheres:
+                # seed = hash(path) % (2 ** 32)
+                # rng = np.random.default_rng(seed)
+                seg_path = path.replace("_0000.nii.gz", ".nii.gz", ).replace("images", "labels")
+                kidney_mask = set_orientation_nib(nib.load(seg_path)).get_fdata()
+
+                # if rng.random() < 0.5:
+                #
+                #     y = torch.Tensor([True])
+                #
+                #     kidney_mask[kidney_mask > 0] = 1
+                #     possible_locs = np.where(kidney_mask == 1)
+                #     options = list(zip(*possible_locs))
+                #     random_idx = rng.integers(len(options))
+                #     coords = options[random_idx]
+                #     x = add_sphere(x, coords, rng)
+                # else:
+                #     y = torch.Tensor([False])
+                # gaussian_noise = torch.FloatTensor(np.random.rand(*x.shape) * 20)
+                # x = np.array(gaussian_noise)
+            nr_of_original_slices = x.shape[-1]
+
+            new_spacings = (0.84, 0.84, 2)
+            x = resize_array(x, spacings, new_spacings)
+            if self.spheres:
+                kidney_mask = resize_array(kidney_mask, spacings, new_spacings)
+
+            # x = np.expand_dims(x, 0)  # needed for cropper
+            # x = self.center_cropper(x).as_tensor()
+            # x = np.squeeze(x)
+
+            x = np.clip(x, -1024, None)
+            x = remove_table_3d(torch.Tensor(x))
+            # x = self.air_cropper(x)
+            box_start_, box_end_ = self.air_cropper.compute_bounding_box(x)
+            x = self.air_cropper.crop_pad(x, box_start_, box_end_)
+            if self.spheres:
+                kidney_mask = self.air_cropper.crop_pad(kidney_mask, box_start_, box_end_)
+
+            if self.kind == '2D':
+                roll_forward = np.roll(x, 1, axis=(2))
+                roll_back = np.roll(x, -1, axis=(2))
+                x = np.stack((roll_back, x, roll_forward), axis=0)
+                x = x[:, :, :, 1:-1]
+
+            else:  # 3d patches
+                x = np.expand_dims(x, 0)
+
+            x = np.transpose(x, (0, 3, 1, 2))  # C, D, H, W
+
+            x = normalize_scan_per_patch(x)
         else:
-            path = self.exact_path
-        # find scan id from path
-
-        match = path.split('/')[-1]
-
-        case_id = match.replace("_0000.nii", ".nii")
-        y = torch.Tensor(self.labels[index])
-        x = nib.load(path)
-
-        x = set_orientation_nib(x)
-        spacings = x.header.get_zooms()  # [2]-for only z, currently changed to take all spacings | h,w,d (order ?)
-        x = x.get_fdata()
-
-        nr_of_original_slices = x.shape[-1]
-
-        new_spacings = (0.84, 0.84, 2)
-        x = resize_array(x, spacings, new_spacings)
-        # print("after adjusting spacings: ", x.shape)
-
-        # nth_slice = self.pick_sample_frequency(nr_of_original_slices, self.nth_slice)
-
-        # x = x[:, :, ::nth_slice]  # sample slices
-
-        x = np.expand_dims(x, 0)  # needed for cropper
-        x = self.center_cropper(x).as_tensor()
-        x = np.squeeze(x)
-        # if self.compass_filtering:
-        #     original_len = x.shape[-1]
-        #     low_index, high_index = self.COMPASS.compass_filter_indexes(case_id,
-        #                                                                 train=True if self.type == 'train' else False)
-        #     x = x[:, :, low_index:high_index]
-        #     after_len = x.shape[-1]
-        #     filter_effect = original_len - after_len
-        # else:
-        #     filter_effect = 0
-        x = np.clip(x, -1024, None)
-        x = remove_table_3d(x)
-        shape_after_table = x.shape
-        x = self.air_cropper(x)
-
-        if self.kind == '2D':
-
-            roll_forward = np.roll(x, 1, axis=(2))
-            # mirror the first slice
-            # roll_forward[:, :, 0] = roll_forward[:, :, 1]
-            roll_back = np.roll(x, -1, axis=(2))
-            # mirror the first slice
-            # roll_back[:, :, -1] = roll_back[:, :, -2]
-            x = np.stack((roll_back, x, roll_forward), axis=0)
-            x = x[:, :, :, 1:-1]
-
-        else:  # 3d patches
-            x = np.expand_dims(x, 0)
-
-        x = np.transpose(x, (0, 3, 1, 2))  # C, D, H, W
-
-        x = normalize_scan_new(x)
-        D, H, W = x.shape[1:]
-        edge_buffer = 75
-        if self.kind == "2D":
-            depth_buffer = 1
-            patch_size = (1, 120, 120)
-        else:
-            if x.shape[1] > 65:
-                depth_buffer = 33
-                patch_size = (65, 150, 150)
-            else:
-                patch_size = (x.shape[1] - 2, 150, 150)
-                depth_buffer = (x.shape[1] - 1) // 2
-        if self.sample == "uniform":
-            patch_centers = np.random.uniform(np.array([depth_buffer, edge_buffer, edge_buffer]),
-                                              np.array([D - depth_buffer, H - edge_buffer, W - edge_buffer]),
-                                              size=np.array([self.nr_of_patches, 3]))
-            patch_centers = np.round(patch_centers).astype(int)
-        elif self.sample == "grid":
-            patch_centers = []
-            for d in range(depth_buffer, D - depth_buffer, patch_size[0]*9):
-                for h in range(edge_buffer, H - edge_buffer, int(patch_size[1]*2/3)):
-                    for w in range(edge_buffer, W - edge_buffer, int(patch_size[2]*2/3)):
-                        patch_centers.append([[d, h, w]])
-            patch_centers = np.concatenate(patch_centers)
+            x = self.x
+        if self.spheres:
+            kidney_mask = np.transpose(kidney_mask, (2, 0, 1))
+            kidney_mask[kidney_mask > 0] = 1
+            possible_locs = np.where(kidney_mask == 1)
+            options = list(zip(*possible_locs))
+        patch_centers, patch_size = self.sample_patch_coordinates(x, sphere_options=options if self.spheres else None)
 
         x_tensor = torch.as_tensor(x, dtype=torch.float32)
-        patches = extract_patches_3d(x_tensor, patch_centers, patch_size)
 
-        patches = torch.squeeze(patches)
+        patches = extract_patches_3d(x_tensor, patch_centers, patch_size)
+        if self.kind == "2D":
+            patches = torch.squeeze(patches)
+            threshold_dims = (1, 2, 3)
+        else:
+            threshold_dims = (1, 2, 3, 4)
         num_patches = patches.shape[0]
         indices = torch.arange(num_patches)
-        keep_mask = (patches > 0.05).float().mean(dim=(1, 2, 3)) > self.foreground_threshold
+
+        keep_mask = (patches > 0.05).float().mean(dim=threshold_dims) > self.foreground_threshold
         patches = patches[keep_mask]
-        patch_centers = patch_centers[keep_mask]
+        try:
+            patch_centers = patch_centers[keep_mask]
+        except:
+            print("patch centers", patch_centers.shape)
         filtered_indices = indices[keep_mask]
 
         if self.augmentations is not None:
             x = self.augmentations(x)
 
-        return patches, y, (case_id, new_spacings, path, x), filtered_indices, num_patches, patch_centers
+        if self.mode == "coarse":
+            return patches, y, (case_id, new_spacings, path, x), filtered_indices, num_patches, patch_centers
+        else:
+            self.mode = "coarse"
+            return patches, num_patches, torch.unsqueeze(patch_centers, 0)

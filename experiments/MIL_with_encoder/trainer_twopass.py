@@ -137,130 +137,129 @@ class Trainer:
             tepoch.set_description(f"Epoch {epoch}")
             step += 1
 
-            data = torch.squeeze(data, dim=0)
             # next line disabled for 2d patch model
             # data = torch.permute(data, (1, 0, 2, 3, 4))
-            # data = torch.squeeze(data)
+            data = torch.squeeze(data)
 
             # data = data.to(self.device, dtype=torch.float16, non_blocking=True)
             data = data.cuda(non_blocking=True).to(dtype=torch.float16)
             bag_label = bag_label.cuda(non_blocking=True)
+
+            total_loss = 0
+            total_loss2 = 0
+            path = meta[2][0]  # was 4 before (4-->2)
+            source_label = get_source_label(path)
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
-                total_loss = 0
-                path = meta[2][0]  # was 4 before (4-->2)
-                source_label = get_source_label(path)
+
                 out = model.forward(data, label=bag_label, scan_end=num_patches, source_label=source_label,
                                     patch_centers=patch_centers)
-                forward_time = time.time() - time_forward
-                forward_times.append(forward_time)
+            forward_time = time.time() - time_forward
+            forward_times.append(forward_time)
 
-                if self.classification:
-                    Y_hat = out["predictions"]
-                    Y_prob = out["scores"]
+            if self.depth:
+                depth_scores = out['depth_scores']
 
-                    cls_loss = self.loss_function(Y_prob, bag_label.float())
-                    total_loss += cls_loss
-                    results["class_loss"] += cls_loss.item()
+                (dloss, hloss, wloss), norm_loss = DEPTH_loss(depth_scores, patch_centers)
+                depth_loss = (dloss + hloss + wloss + norm_loss)
+                results["depth_loss"] += depth_loss
 
-                    outputs.append(Y_hat.detach().cpu())
-                    targets.append(bag_label.detach().cpu())
-                    error = calculate_classification_error(bag_label, Y_hat)
-                    results["error"] += error
+                results["d_loss"] += dloss.item()
+                results["w_loss"] += wloss.item()
+                results["h_loss"] += hloss.item()
+                results["dist_loss"] += norm_loss.item()
 
-                    if bag_label == 0:
-                        individual_predictions = out['individual_predictions'].flatten()
-                        length = len(individual_predictions)
-                        individual_predictions = individual_predictions[torch.where(individual_predictions > -4)]
-                        individual_predictions += 4
-                        logit_sum_loss = individual_predictions.abs().sum() / length
+                total_loss += 0.1 * depth_loss
+            if self.attention:
+                # attention_scores = out['attention_weights'].flatten()
+                # attn_loss = ATTENTION_loss(attention_scores, z_spacing=meta[2][2],
+                #                           nth_slice=meta[1]).item()
+                a_loss = 0
+                attention_scores = out['all_attention']
 
-                        results["control_logit_loss"] += logit_sum_loss
-                        total_loss += logit_sum_loss
+                summed_attention = 0
+                for i in range(self.num_heads):
+                    head_attention = attention_scores[:, i].flatten()
+                    summed_attention += head_attention
+                    a_loss += ATTENTION_loss(head_attention, patch_centers)
+                    # entropy part
+                    # N = torch.log(torch.tensor(len(head_attention), dtype=torch.float16)).cuda()
+                    # entropy = 0 * -0.005 * (head_attention * torch.log(head_attention + 1e-12)).sum(dim=0) / N
+                    # ent_loss += 0.5 * entropy
+                attention_matrix = attention_scores[:, 0] * attention_scores[:, 1].reshape(-1, 1)
+                z_bounding_loss = ATTENTION_loss(summed_attention, patch_centers, z_only=True,
+                                                 attention_matrix=attention_matrix)
+                gated_a_loss = a_loss * smooth_gate(a_loss, 0.0002, 20000)
+                total_loss += 300 * (gated_a_loss + z_bounding_loss)  # + entropy) from 1000 --> 400
+                results["attention_loss"] += gated_a_loss
+                results["z_bound"] = + z_bounding_loss
+                if self.num_heads > 1:
+                    diff_loss = torch.sum(attention_scores[:, 0] * attention_scores[:, 1])
 
-                        if self.check:
-                            print("logit sum loss: ", logit_sum_loss)
+                    gated_diff_loss = diff_loss * smooth_gate(diff_loss, 0.001, 20000)
 
-                    # else:
-                    #     attention_scores = out['all_attention']
-                    #     attn = attention_scores[:, 0].flatten()
-                    #     entropy = - (attn * torch.log(attn + 1e-8)).sum()
-                    #
-                    #     results["entropy"] += entropy
-                    #     total_loss += 0.1 * entropy
-                    #     if self.check:
-                    #         print("entropy loss: ", entropy)
-                    #### testing this part
-                    # attention_scores = out['all_attention']
-                    # head_attention = attention_scores[:, 0].flatten()
-                    # instance_logits = out['individual_predictions']
-                    # tau = 0.1
-                    # loss_attention_confidence = - (head_attention * (instance_logits.abs() / tau)).sum()
-                    # total_loss += 0.005 * loss_attention_confidence
-                    # results["attention_confidence"] += loss_attention_confidence
+                    total_loss += gated_diff_loss
+                    results["difference_loss"] += gated_diff_loss
+            if self.classification:
+                Y_hat = out["predictions"]
+                Y_prob = out["scores"]
 
-                if self.dann:
-                    # domain_pred = out['domain_pred']
-                    # path = meta[4][0]
-                    # source_label = get_source_label(path)
-                    # int_label = map_source_label(source_label).type(torch.LongTensor)
-
-                    dann_loss = DANN_loss(out["opposite_Y_logits"], bag_label)
-                    total_loss += 0.1 * dann_loss
-                    results["domain_loss"] += dann_loss.item()
-                    # domain_predictions.append(torch.argmax(domain_pred).item())
-                    # target_sources.append(int_label)
-
-                if self.depth:
-                    depth_scores = out['depth_scores']
-
-                    (dloss, hloss, wloss), norm_loss = DEPTH_loss(depth_scores, patch_centers)
-                    depth_loss = (dloss + hloss + wloss + norm_loss)
-                    results["depth_loss"] += depth_loss
-
-                    results["d_loss"] += dloss.item()
-                    results["w_loss"] += wloss.item()
-                    results["h_loss"] += hloss.item()
-                    results["dist_loss"] += norm_loss.item()
-
-                    total_loss += 0.1 * depth_loss
-                if self.attention:
-                    # attention_scores = out['attention_weights'].flatten()
-                    # attn_loss = ATTENTION_loss(attention_scores, z_spacing=meta[2][2],
-                    #                           nth_slice=meta[1]).item()
-                    a_loss = 0
-                    attention_scores = out['all_attention']
-
-                    summed_attention = 0
-                    for i in range(self.num_heads):
-                        head_attention = attention_scores[:, i].flatten()
-                        summed_attention += head_attention
-                        a_loss += ATTENTION_loss(head_attention, patch_centers)
-
-                    # attention_matrix = attention_scores[:, 0] * attention_scores[:, 1].reshape(-1, 1)
-                    # z_bounding_loss = ATTENTION_loss(summed_attention, patch_centers, z_only=True,
-                    #                                 attention_matrix=attention_matrix)
-                    # gated_a_loss = a_loss * smooth_gate(a_loss, 0.0002, 20000)
-                    total_loss += 500 * (a_loss)  # + entropy) from 1000 --> 400
-                    results["attention_loss"] += a_loss
-                    # results["z_bound"] = + z_bounding_loss
-                    if self.num_heads > 1:
-                        diff_loss = 0
-                        for i in range(self.num_heads):
-                            att_one = attention_scores[:, i]
-                            for j in range(self.num_heads):
-                                att_two = attention_scores[:, j]
-
-                                diff_loss += 0.5 * torch.sum(att_one * att_two)
-
-                        gated_diff_loss = diff_loss * smooth_gate(diff_loss, 0.001, 20000)
-
-                        total_loss += gated_diff_loss
-                        results["difference_loss"] += gated_diff_loss
+                cls_loss = self.loss_function(Y_prob, bag_label.float())
+                total_loss += cls_loss
 
             if train:
                 time_backprop = time.time()
                 scaler.scale(total_loss).backward()
+                backprop_time = time.time() - time_backprop
+                backprop_times.append(backprop_time)
+
+                scaler.step(self.optimizer)
+                scaler.update()
+                self.optimizer.zero_grad(set_to_none=True)
+
+                if self.global_steps < self.warmup_steps:
+                    # Linear warmup
+                    scale = (self.global_steps + 1) / float(max(1, self.warmup_steps))
+                    for g in self.optimizer.param_groups:
+                        g['lr'] = g['initial_lr'] * scale
+
+            top_centers = []
+            for i in range(self.num_heads):
+                a = out["all_attention"][:, i].cpu()
+                top3 = a.argsort()[-3:]
+
+                top_patch_centers = patch_centers[:, top3, :]
+                top_centers.append(top_patch_centers)
+            top_centers = torch.squeeze(torch.cat(top_centers, dim=1))
+
+            data_loader.dataset.set_refinement_targets(top_centers=top_centers, volume=torch.squeeze(meta[3]))
+            random_idx = 7
+            refined_data, num_patches, patch_centers = data_loader.dataset[random_idx]
+            refined_data = torch.squeeze(refined_data)
+            refined_data = refined_data.cuda(non_blocking=True).to(dtype=torch.float16)
+
+            with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
+
+                out = model.forward(refined_data.cuda(), label=bag_label, scan_end=num_patches,
+                                    source_label=source_label,
+                                    patch_centers=patch_centers)
+
+            if self.classification:
+                Y_hat = out["predictions"]
+                Y_prob = out["scores"]
+
+                cls_loss = self.loss_function(Y_prob, bag_label.float())
+                total_loss2 += cls_loss
+                results["class_loss"] += cls_loss.item()
+
+                outputs.append(Y_hat.detach().cpu())
+                targets.append(bag_label.detach().cpu())
+                error = calculate_classification_error(bag_label, Y_hat)
+                results["error"] += error
+
+            if train:
+                time_backprop = time.time()
+                scaler.scale(total_loss2).backward()
                 backprop_time = time.time() - time_backprop
                 backprop_times.append(backprop_time)
 
@@ -278,7 +277,7 @@ class Trainer:
                     self.scheduler.step()
                 self.global_steps += 1
 
-            results["loss"] += total_loss.item()
+            results["loss"] += total_loss.item() + total_loss2.item()
 
             if step >= 6 and self.check:
                 break
@@ -303,7 +302,6 @@ class Trainer:
         #     domain_predictions = np.array(domain_predictions)
         #     domain_f1 = f1_score(target_sources, domain_predictions, average='macro')
         #     results["domain_f1_score"] = domain_f1
-        f1 = 0
         if self.classification:
             outputs = np.concatenate(outputs)
             targets = np.concatenate(targets)

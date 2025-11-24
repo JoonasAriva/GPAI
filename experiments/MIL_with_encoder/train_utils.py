@@ -30,6 +30,9 @@ from swin_models import SWINCompass, SWINClassifier
 from trainer import Trainer
 
 
+# from trainer_twopass import Trainer
+
+
 def prepare_dataloader(cfg: DictConfig):
     if "kidney" in cfg.data.dataloader:
         if "pasted" in cfg.data.dataloader:
@@ -45,7 +48,8 @@ def prepare_dataloader(cfg: DictConfig):
             'roll_slices': cfg.data.roll_slices, 'model_type': cfg.model.model_type,
             'generate_spheres': True if cfg.data.dataloader == 'kidney_synth' else False, 'patchify': cfg.data.patchify,
             'no_lungs': cfg.data.no_lungs, "pasted_experiment": pasted_experiment, 'TUH_only': cfg.data.TUH_only,
-            'compass_filtering': cfg.data.compass_filter, "nr_of_patches": cfg.data.nr_of_patches}
+            'compass_filtering': cfg.data.compass_filter, "nr_of_patches": cfg.data.nr_of_patches,
+            'spheres': cfg.data.spheres, 'sample': cfg.data.sample}
 
         if cfg.data.patchify:
             train_dataset = KidneyDataloader3D(type="train",
@@ -62,17 +66,26 @@ def prepare_dataloader(cfg: DictConfig):
         loader_kwargs = {'num_workers': 1 if cfg.check else 4, 'pin_memory': True} if torch.cuda.is_available() else {}
 
         # create sampler for training set
-        class_sample_count = [train_dataset.controls, train_dataset.cases]
-        weights = 1 / torch.Tensor(class_sample_count)
-        samples_weight = np.array([weights[int(t[0])] for t in train_dataset.labels])
-        samples_weight = torch.from_numpy(samples_weight)
-        samples_weight = samples_weight.double()
-        sampler = torch.utils.data.sampler.WeightedRandomSampler(samples_weight, len(samples_weight),
-                                                                 replacement=False)
+        if cfg.data.spheres == False:
+            class_sample_count = [train_dataset.controls, train_dataset.cases]
+            weights = 1 / torch.Tensor(class_sample_count)
+            samples_weight = np.array([weights[int(t[0])] for t in train_dataset.labels])
+            samples_weight = torch.from_numpy(samples_weight)
+            samples_weight = samples_weight.double()
+            sampler = torch.utils.data.sampler.WeightedRandomSampler(samples_weight, len(samples_weight),
+                                                                     replacement=False)
+        else:
+            sampler = None
 
         if cfg.training.multi_gpu == True:
-            sampler = DistributedSamplerWrapper(sampler=sampler, num_replicas=int(torch.cuda.device_count()),
-                                                rank=int(os.environ["LOCAL_RANK"]), shuffle=True)
+
+            if cfg.data.spheres == False:
+                sampler = DistributedSamplerWrapper(sampler=sampler, num_replicas=int(torch.cuda.device_count()),
+                                                    rank=int(os.environ["LOCAL_RANK"]), shuffle=True)
+            else:
+                sampler = DistributedSampler(train_dataset, num_replicas=int(torch.cuda.device_count()),
+                                             rank=int(os.environ["LOCAL_RANK"]),
+                                             shuffle=True)
             # sampler_train = DistributedSampler(train_dataset, num_replicas=2, rank=int(os.environ["LOCAL_RANK"]),
             #                                   shuffle=True)
             sampler_test = DistributedSampler(test_dataset, num_replicas=int(torch.cuda.device_count()),
@@ -128,6 +141,10 @@ def pick_model(cfg: DictConfig):
         model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
                                   num_attention_heads=cfg.model.num_heads, instnorm=cfg.model.inst_norm,
                                   resnet_type="34", frozen_backbone=cfg.model.frozen_backbone, GRL=cfg.model.dann)
+    elif cfg.model.name == 'resnet50V3':
+        model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
+                                  num_attention_heads=cfg.model.num_heads, instnorm=cfg.model.inst_norm,
+                                  resnet_type="50", frozen_backbone=cfg.model.frozen_backbone, GRL=cfg.model.dann)
     elif cfg.model.name == 'resnetselfattention':
         model = ResNetSelfAttention(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'posembed':
@@ -165,7 +182,7 @@ def pick_model(cfg: DictConfig):
     elif cfg.model.name == 'depth_patches3D':
         model = ResNet3DDepth()
     elif cfg.model.name == 'resnet3D':
-        model = ResNet3D()
+        model = ResNet3D(resnet_type="50")
     elif cfg.model.name == 'transattention':
         model = TransAttention(instnorm=cfg.model.inst_norm, resnet_type="34")
     elif cfg.model.name == 'organ':

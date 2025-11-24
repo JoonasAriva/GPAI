@@ -208,10 +208,7 @@ class Trainer2DPatchDepth:
             step += 1
             gc.collect()
 
-            if self.model_type == '3D':
-                data = torch.permute(data, (1, 0, 2, 3, 4))
-            else:
-                data = torch.squeeze(data)
+            data = torch.squeeze(data, dim=0)
 
             if self.check:
                 print("data shape: ", data.shape, flush=True)
@@ -226,8 +223,7 @@ class Trainer2DPatchDepth:
             time_forward = time.time()
             grad_ctx = torch.no_grad() if not train else nullcontext()
             with torch.cuda.amp.autocast(), grad_ctx:
-                features, att_head_weights = model.forward(data)
-
+                features = model.forward(data)
 
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
@@ -239,11 +235,6 @@ class Trainer2DPatchDepth:
                 loss_time = time.time() - time_loss
                 loss_times.append(loss_time)
                 depth_loss = (dloss + hloss + wloss + norm_loss) / self.update_freq
-
-                if self.attention_exp:
-                    aloss = 0
-                    for i in range(att_head_weights.shape[1]):
-                        aloss = ATTENTION_loss()
 
             if train:
                 time_backprop = time.time()

@@ -209,6 +209,15 @@ def normalize_scan_new(x):
     return norm_x
 
 
+def normalize_scan_per_patch(x):
+    clipped_x = np.clip(x, -150, 250)  # soft tissue window
+    mins = np.min(clipped_x, axis=(1, 2, 3), keepdims=True)
+    maxs = np.max(clipped_x, axis=(1, 2, 3), keepdims=True)
+    norm_x = (clipped_x - mins) / (maxs - mins)
+
+    return norm_x
+
+
 def remove_empty_tiles(data):
     # 3, 128, 128, 1520
     # find minimum values per patch
@@ -265,15 +274,33 @@ def get_kidney_datasets(type: str, no_lungs: bool = False, TUH_only: bool = Fals
         tumor = glob.glob(other_datasets_path + '/imagesTr/' + type + '/*nii.gz')
         all_tumors.extend(tumor)
 
-        # parnu_data_path = base_path + 'kidney/parnu/'
-        # control_path = parnu_data_path + 'controls/images/' + type + '/*nii.gz'
-        # tumor_path = parnu_data_path + 'cases/images/' + type + '/*nii.gz'
-        # control = glob.glob(control_path)
-        # tumor = glob.glob(tumor_path)
-        # all_controls.extend(control)
-        # all_tumors.extend(tumor)
+        parnu_data_path = base_path + 'kidney/parnu/'
+        control_path = parnu_data_path + 'controls/images/' + type + '/*nii.gz'
+        tumor_path = parnu_data_path + 'cases/images/' + type + '/*nii.gz'
+        control = glob.glob(control_path)
+        tumor = glob.glob(tumor_path)
+        all_controls.extend(control)
+        all_tumors.extend(tumor)
 
         return all_controls, all_tumors
+
+
+def get_TUH_control(type: str):
+    base_path = '/scratch/project_465001979/ct_data/'  # lumi
+
+    tuh_train_data_path = base_path + 'kidney/tuh_train/'
+    tuh_test_data_path = base_path + 'kidney/tuh_test/'
+
+    all_controls = []
+
+    for data_path in [tuh_train_data_path, tuh_test_data_path]:
+        control_path = data_path + 'controls/images/' + type + '/*nii.gz'
+
+        control = glob.glob(control_path)
+
+        all_controls.extend(control)
+
+    return all_controls
 
 
 def get_source_label(path):

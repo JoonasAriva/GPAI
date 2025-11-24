@@ -70,7 +70,7 @@ class AttentionLossPatches2D(DepthLossV2):
             y_dist = real_distances[:, :, 1]
             # x_dist = torch.unsqueeze(real_distances[:, :, 2], 2)
             real_distances = z_dist
-            acceptable_distance = 100
+            acceptable_distance = 75
 
         dist_norm = torch.norm(real_distances, dim=2)
         mercy_value = acceptable_distance * self.step
