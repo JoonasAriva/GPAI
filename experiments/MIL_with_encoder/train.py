@@ -61,7 +61,7 @@ def main(cfg: DictConfig):
     train_loader, test_loader = prepare_dataloader(cfg)
 
     # steps_in_epoch = 480  # with pärnu and kirc and kits its 1250, if just TUH, its 480
-    steps_in_epoch = 1200
+    steps_in_epoch = 480
     steps_in_epoch = steps_in_epoch // n_gpus
     if cfg.data.dataloader == 'kidney_pasted':
         steps_in_epoch = 478 // n_gpus
@@ -224,7 +224,7 @@ def main(cfg: DictConfig):
             logging.info("Logging results to wandb")
             experiment.log(epoch_results)
 
-            torch.save(model.module.state_dict(), str(dir_checkpoint / 'current_model.pth'))
+            torch.save(model.module.state_dict(), str(dir_checkpoint / 'last_model.pth'))
             torch.save(optimizer.state_dict(), str(dir_checkpoint / 'current_optimizer.pth'))
             torch.save(scheduler.state_dict(), str(dir_checkpoint / 'current_scheduler.pth'))
             logging.info("Checkpoint saved")

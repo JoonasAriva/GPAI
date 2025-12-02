@@ -144,7 +144,8 @@ def pick_model(cfg: DictConfig):
     elif cfg.model.name == 'resnet50V3':
         model = ResNetAttentionV3(neighbour_range=cfg.model.neighbour_range,
                                   num_attention_heads=cfg.model.num_heads, instnorm=cfg.model.inst_norm,
-                                  resnet_type="50", frozen_backbone=cfg.model.frozen_backbone, GRL=cfg.model.dann)
+                                  resnet_type="50", frozen_backbone=cfg.model.frozen_backbone, GRL=cfg.model.dann,
+                                  cysts=cfg.model.cysts)
     elif cfg.model.name == 'resnetselfattention':
         model = ResNetSelfAttention(instnorm=cfg.model.inst_norm)
     elif cfg.model.name == 'posembed':

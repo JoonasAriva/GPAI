@@ -28,6 +28,7 @@ model:
   classification: True
   frozen_backbone: False
   dann: False
+  cysts: False
 
 data:
   batch_size: 1
@@ -48,3 +49,5 @@ data:
   random_experiment: False
   spheres: True
   sample: uniform
+
+## checkpoint: /users/arivajoo/results/MIL/train/resnet50V3/kidney_real/2025-11-20/11-42-24/checkpoints

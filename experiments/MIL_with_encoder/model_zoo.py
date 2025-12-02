@@ -139,7 +139,7 @@ class ResNetAttentionV3(nn.Module):
         return dist_norm
 
     def __init__(self, neighbour_range=0, num_attention_heads=1, instnorm=False, ghostnorm=False, resnet_type="18",
-                 frozen_backbone: bool = False, GRL: bool = False):
+                 frozen_backbone: bool = False, GRL: bool = False, cysts: bool = False):
         super().__init__()
         self.neighbour_range = neighbour_range
         self.num_attention_heads = num_attention_heads
@@ -149,6 +149,7 @@ class ResNetAttentionV3(nn.Module):
 
         print("Using neighbour attention with a range of ", self.neighbour_range)
         print("# of attention heads: ", self.num_attention_heads)
+        self.cysts = cysts
 
         self.sig = nn.Sigmoid()
         if ghostnorm:
@@ -207,7 +208,11 @@ class ResNetAttentionV3(nn.Module):
         self.cls_head = nn.Linear(self.num_features, 3)  # for depth predicitng
         self.classifier = nn.Sequential(nn.Linear(self.num_features, 1))
 
-        self.local_attn = LocalNeighborhoodAttention(feat_dim=self.num_features, k=4)
+        # self.local_attn = LocalNeighborhoodAttention(feat_dim=self.num_features, k=4)
+
+        if self.cysts:
+            print("Predicting cysts too!")
+            self.cyst_head = nn.Linear(in_features=self.num_features, out_features=1)
 
     def forward(self, x, scan_end, patch_centers, **kwargs):
         with torch.no_grad():
@@ -218,22 +223,34 @@ class ResNetAttentionV3(nn.Module):
         out = dict()
         H = self.model(x[:scan_end])
         H = H.view(-1, self.num_features)
-        H_enriched = self.local_attn(H, dist_norm)
+        # H_enriched = self.local_attn(H, dist_norm)
 
-        attention_maps = [head(H_enriched) for head in self.attention_heads]
+        attention_maps = [head(H) for head in self.attention_heads]
         attention_maps = torch.cat(attention_maps, dim=1)
 
         unnorm_A = attention_maps.view(self.num_attention_heads, -1)
 
         A = F.softmax(unnorm_A, dim=1)
+
         opposite_A = F.softmax(-unnorm_A, dim=1)
 
-        all_agg_vectors = torch.einsum('tb,bf->tf', A, H_enriched)  # (num_heads, feature_dim)
+        all_agg_vectors = torch.einsum('tb,bf->tf', A, H)  # (num_heads, feature_dim)
 
         # M = all_agg_vectors.reshape(1, -1)
 
         # A = torch.mean(A, dim=0).view(1, -1)
         # M = torch.mm(A, H)
+
+        if self.cysts:
+            cyst_vector = all_agg_vectors[0, :].view(1, -1)
+            all_agg_vectors = all_agg_vectors[1, :].view(1, -1)
+            cyst_logit = self.cyst_head(cyst_vector)
+            cyst_probs = self.sig(cyst_logit)
+            cyst_hat = torch.ge(cyst_probs, 0.5).float()
+
+            out['cyst_prediction'] = cyst_hat
+            out['cyst_scores'] = cyst_logit
+            out['individual_cyst_predictions'] = self.classifier(H)
 
         Y_logits = self.classifier(all_agg_vectors)
         individual_predictions = self.classifier(H)

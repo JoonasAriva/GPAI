@@ -274,13 +274,13 @@ def get_kidney_datasets(type: str, no_lungs: bool = False, TUH_only: bool = Fals
         tumor = glob.glob(other_datasets_path + '/imagesTr/' + type + '/*nii.gz')
         all_tumors.extend(tumor)
 
-        parnu_data_path = base_path + 'kidney/parnu/'
-        control_path = parnu_data_path + 'controls/images/' + type + '/*nii.gz'
-        tumor_path = parnu_data_path + 'cases/images/' + type + '/*nii.gz'
-        control = glob.glob(control_path)
-        tumor = glob.glob(tumor_path)
-        all_controls.extend(control)
-        all_tumors.extend(tumor)
+        # parnu_data_path = base_path + 'kidney/parnu/'
+        # control_path = parnu_data_path + 'controls/images/' + type + '/*nii.gz'
+        # tumor_path = parnu_data_path + 'cases/images/' + type + '/*nii.gz'
+        # control = glob.glob(control_path)
+        # tumor = glob.glob(tumor_path)
+        # all_controls.extend(control)
+        # all_tumors.extend(tumor)
 
         return all_controls, all_tumors
 

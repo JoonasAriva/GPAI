@@ -54,6 +54,7 @@ class Trainer:
         self.slice_level_supervision = cfg.data.slice_level_supervision
         self.classification = cfg.model.classification
         self.num_heads = cfg.model.num_heads
+        self.cysts = cfg.model.cysts
         print("num heads: ", self.num_heads)
         if cfg.model.dann:
             print("Using DANN")
@@ -88,18 +89,32 @@ class Trainer:
                                          pd.read_csv(path + "slice_info_tuh_test_for_test.csv")
                                          ])
 
+        path = "/users/arivajoo/GPAI/experiments/calculate_tumor_sizes/"
+        self.tumor_sizes = pd.concat([pd.read_csv(path + "train_set.csv"), pd.read_csv(path + "test_set.csv")])
+
     def calculate_classification_error(self, Y, Y_hat):
         Y = Y.float()
         error = 1. - Y_hat.eq(Y).cpu().float().mean().data.item()
 
         return error
 
+    def get_cyst_label(self, path):
+
+        filename = path.split('/')[-1].replace("_0000.nii.gz", ".nii.gz")
+
+        cyst_size = self.tumor_sizes.loc[self.tumor_sizes["path"] == filename, "2"].values[0]
+        if cyst_size > 0:
+            cyst_label = torch.Tensor([[1]])
+        else:
+            cyst_label = torch.Tensor([[0]])
+        return cyst_label
+
     def run_one_epoch(self, model, data_loader, epoch: int, train: bool = True, local_rank=0):
 
         results = defaultdict(int)  # all metrics start at zero
         step = 0
         nr_of_batches = len(data_loader)
-
+        self.train = train
         disable_tqdm = False if local_rank == 0 else True
         tepoch = tqdm(data_loader, unit="batch", ascii=True,
                       total=self.steps_in_epoch if self.steps_in_epoch > 0 and train else len(data_loader),
@@ -117,6 +132,9 @@ class Trainer:
         backprop_times = []
         outputs = []
         targets = []
+        cyst_outputs = []
+        cyst_targets = []
+
         domain_predictions = []
         target_sources = []
 
@@ -150,6 +168,7 @@ class Trainer:
                 total_loss = 0
                 path = meta[2][0]  # was 4 before (4-->2)
                 source_label = get_source_label(path)
+                cyst_label = self.get_cyst_label(path).cuda()
                 out = model.forward(data, label=bag_label, scan_end=num_patches, source_label=source_label,
                                     patch_centers=patch_centers)
                 forward_time = time.time() - time_forward
@@ -167,37 +186,41 @@ class Trainer:
                     targets.append(bag_label.detach().cpu())
                     error = calculate_classification_error(bag_label, Y_hat)
                     results["error"] += error
+                    individual_predictions = out['individual_predictions'].flatten()
 
+                    if self.cysts:
+                        cyst_hat = out['cyst_prediction']
+                        cyst_prob = out['cyst_scores']
+                        cyst_cls_loss = self.loss_function(cyst_prob, cyst_label.float())
+                        total_loss += cyst_cls_loss
+                        results["cyst_class_loss"] += cyst_cls_loss.item()
+
+                        cyst_outputs.append(cyst_hat.detach().cpu())
+                        cyst_targets.append(cyst_label.detach().cpu())
+                        cyst_error = calculate_classification_error(cyst_label, cyst_hat)
+                        results["cyst_error"] += cyst_error
                     if bag_label == 0:
-                        individual_predictions = out['individual_predictions'].flatten()
                         length = len(individual_predictions)
                         individual_predictions = individual_predictions[torch.where(individual_predictions > -4)]
                         individual_predictions += 4
-                        logit_sum_loss = individual_predictions.abs().sum() / length
+                        con_logit_sum_loss = individual_predictions.abs().sum() / length
 
-                        results["control_logit_loss"] += logit_sum_loss
+                        results["control_logit_loss"] += con_logit_sum_loss
+                        total_loss += con_logit_sum_loss
+
+                        if self.check:
+                            print("logit sum control loss: ", con_logit_sum_loss)
+
+                    else:
+                        k = 2
+                        values, indices = torch.topk(individual_predictions, k=k)
+                        logit_sum_loss = -values.sum() / k
+                        logit_sum_loss = torch.maximum(logit_sum_loss, torch.ones_like(logit_sum_loss).cuda() * -4)
+                        results["case_logit_loss"] += logit_sum_loss
                         total_loss += logit_sum_loss
 
                         if self.check:
-                            print("logit sum loss: ", logit_sum_loss)
-
-                    # else:
-                    #     attention_scores = out['all_attention']
-                    #     attn = attention_scores[:, 0].flatten()
-                    #     entropy = - (attn * torch.log(attn + 1e-8)).sum()
-                    #
-                    #     results["entropy"] += entropy
-                    #     total_loss += 0.1 * entropy
-                    #     if self.check:
-                    #         print("entropy loss: ", entropy)
-                    #### testing this part
-                    # attention_scores = out['all_attention']
-                    # head_attention = attention_scores[:, 0].flatten()
-                    # instance_logits = out['individual_predictions']
-                    # tau = 0.1
-                    # loss_attention_confidence = - (head_attention * (instance_logits.abs() / tau)).sum()
-                    # total_loss += 0.005 * loss_attention_confidence
-                    # results["attention_confidence"] += loss_attention_confidence
+                            print("logit sum case loss: ", logit_sum_loss)
 
                 if self.dann:
                     # domain_pred = out['domain_pred']
@@ -298,6 +321,10 @@ class Trainer:
             results[key] = value / nr_of_batches
         results["epoch"] = epoch  # epoch number
 
+        if self.check:
+            print("logit sum control loss in the end: ", results["control_logit_loss"])
+            print("logit sum case loss in the end: ", results["case_logit_loss"])
+
         # if self.dann:
         #     target_sources = np.concatenate(target_sources)
         #     domain_predictions = np.array(domain_predictions)
@@ -309,6 +336,12 @@ class Trainer:
             targets = np.concatenate(targets)
             f1 = f1_score(targets, outputs, average='macro')
             results["f1_score"] = f1
+
+            if self.cysts:
+                cyst_outputs = np.concatenate(cyst_outputs)
+                cyst_targets = np.concatenate(cyst_targets)
+                cyst_f1 = f1_score(cyst_targets, cyst_outputs, average='macro')
+                results["cyst_f1"] = cyst_f1
 
         print_multi_gpu(
             f"data speed: {round(np.mean(data_times), 3)}, forward speed ,{round(np.mean(forward_times), 3)},backprop speed: , {round(np.mean(backprop_times), 3)}",
