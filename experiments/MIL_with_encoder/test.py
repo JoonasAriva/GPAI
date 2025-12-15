@@ -10,13 +10,15 @@ import hydra
 import numpy as np
 import pandas as pd
 import torch
+import torch.distributed as dist
 from omegaconf import OmegaConf, DictConfig
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-
-from multi_gpu_utils import print_multi_gpu, log_multi_gpu, reduce_results_dict
+from train_utils import prepare_optimizer
+from focusMIL_trainer import FocusTrainer
+from multi_gpu_utils import print_multi_gpu, log_multi_gpu
 from trainer_simple import SimpleTrainer
-import torch.distributed as dist
+from multi_gpu_utils import print_multi_gpu, log_multi_gpu, reduce_results_dict
 # from torchinfo import summary
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
@@ -92,9 +94,11 @@ def main(cfg: DictConfig):
             model.cuda()
 
     trainer = SimpleTrainer(cfg)
-
+    #loss_function = torch.nn.BCEWithLogitsLoss(reduction='mean').cuda()
+    #optimizer = prepare_optimizer(cfg, model)
+    #trainer = FocusTrainer(optimizer=optimizer,loss_function=loss_function,cfg=cfg)
     epoch_results = dict()
-    train_results, train_df = trainer.run_one_epoch(model, train_loader, 1, train=True, local_rank=local_rank)
+    train_results, train_df = trainer.run_one_epoch(model, train_loader, 1, train=False, local_rank=local_rank)
     test_results, test_df = trainer.run_one_epoch(model, test_loader, 1, train=False, local_rank=local_rank)
 
     train_results = {k + '_train': v for k, v in train_results.items()}
@@ -102,6 +106,11 @@ def main(cfg: DictConfig):
 
     epoch_results.update(train_results)
     epoch_results.update(test_results)
+
+    if cfg.training.multi_gpu == True:
+        epoch_results = reduce_results_dict(epoch_results)
+        if local_rank == 0:
+            print(epoch_results)
 
     if cfg.training.multi_gpu == True:
         torch.distributed.barrier()

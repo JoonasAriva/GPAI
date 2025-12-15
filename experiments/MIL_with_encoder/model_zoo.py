@@ -208,7 +208,7 @@ class ResNetAttentionV3(nn.Module):
         self.cls_head = nn.Linear(self.num_features, 3)  # for depth predicitng
         self.classifier = nn.Sequential(nn.Linear(self.num_features, 1))
 
-        # self.local_attn = LocalNeighborhoodAttention(feat_dim=self.num_features, k=4)
+        self.local_attn = LocalNeighborhoodAttention(feat_dim=self.num_features, k=8)
 
         if self.cysts:
             print("Predicting cysts too!")
@@ -223,56 +223,57 @@ class ResNetAttentionV3(nn.Module):
         out = dict()
         H = self.model(x[:scan_end])
         H = H.view(-1, self.num_features)
-        # H_enriched = self.local_attn(H, dist_norm)
+        H = self.local_attn(H, dist_norm)
 
-        attention_maps = [head(H) for head in self.attention_heads]
-        attention_maps = torch.cat(attention_maps, dim=1)
+        # attention_maps = [head(H) for head in self.attention_heads]
+        # attention_maps = torch.cat(attention_maps, dim=1)
 
-        unnorm_A = attention_maps.view(self.num_attention_heads, -1)
+        # unnorm_A = attention_maps.view(self.num_attention_heads, -1)
 
-        A = F.softmax(unnorm_A, dim=1)
+        # A = F.softmax(unnorm_A, dim=1)
 
-        opposite_A = F.softmax(-unnorm_A, dim=1)
+        # opposite_A = F.softmax(-unnorm_A, dim=1)
 
-        all_agg_vectors = torch.einsum('tb,bf->tf', A, H)  # (num_heads, feature_dim)
+        # all_agg_vectors = torch.einsum('tb,bf->tf', A, H)  # (num_heads, feature_dim)
 
         # M = all_agg_vectors.reshape(1, -1)
 
         # A = torch.mean(A, dim=0).view(1, -1)
         # M = torch.mm(A, H)
 
-        if self.cysts:
-            cyst_vector = all_agg_vectors[0, :].view(1, -1)
-            all_agg_vectors = all_agg_vectors[1, :].view(1, -1)
-            cyst_logit = self.cyst_head(cyst_vector)
-            cyst_probs = self.sig(cyst_logit)
-            cyst_hat = torch.ge(cyst_probs, 0.5).float()
-
-            out['cyst_prediction'] = cyst_hat
-            out['cyst_scores'] = cyst_logit
-            out['individual_cyst_predictions'] = self.classifier(H)
+        # if self.cysts:
+        #     cyst_vector = all_agg_vectors[0, :].view(1, -1)
+        #     all_agg_vectors = all_agg_vectors[1, :].view(1, -1)
+        #     cyst_logit = self.cyst_head(cyst_vector)
+        #     cyst_probs = self.sig(cyst_logit)
+        #     cyst_hat = torch.ge(cyst_probs, 0.5).float()
+        #
+        #     out['cyst_prediction'] = cyst_hat
+        #     out['cyst_scores'] = cyst_logit
+        #     out['individual_cyst_predictions'] = self.classifier(H)
+        all_agg_vectors = H.mean(dim=0).view(1, -1)
 
         Y_logits = self.classifier(all_agg_vectors)
         individual_predictions = self.classifier(H)
         Y_probs = self.sig(Y_logits)
 
-        if self.grl:
-            opposite_agg_vectors = torch.einsum('tb,bf->tf', opposite_A, H)
-            opposite_Y_logits = self.grl_classifier(self.grad_reversal(opposite_agg_vectors))
-            out["opposite_Y_logits"] = opposite_Y_logits
+        # if self.grl:
+        #     opposite_agg_vectors = torch.einsum('tb,bf->tf', opposite_A, H)
+        #     opposite_Y_logits = self.grl_classifier(self.grad_reversal(opposite_agg_vectors))
+        #     out["opposite_Y_logits"] = opposite_Y_logits
 
         Y_hat = torch.ge(Y_probs, 0.5).float()
 
         out['predictions'] = Y_hat
         out['scores'] = Y_logits
-        out['attention_weights'] = A
-        out['unnorm_A'] = unnorm_A
+        # out['attention_weights'] = A
+        # out['unnorm_A'] = unnorm_A
         out['vectors'] = H
 
         preds = self.cls_head(H)
         out['depth_scores'] = preds
         out['individual_predictions'] = individual_predictions
-        out["all_attention"] = F.softmax(attention_maps, dim=0)
+        # out["all_attention"] = F.softmax(attention_maps, dim=0)
         return out  # Y_prob, Y_hat, unnorm_A
 
 

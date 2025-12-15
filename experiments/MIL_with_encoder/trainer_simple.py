@@ -62,6 +62,8 @@ class SimpleTrainer:
         backprop_times = []
         outputs = []
         targets = []
+        patch_outputs = []
+        patch_targets = []
 
         attention_scores = dict()
         attention_scores["all_scans"] = [[], []]  # first is for all label acc, second is tumor specific
@@ -70,7 +72,7 @@ class SimpleTrainer:
         time_data = time.time()
 
         rows = []
-        for data, bag_label, meta, filtered_indices, num_patches, patch_centers in tepoch:
+        for data, bag_idx, bag_label, patch_class, patch_centers, path in tepoch:
             # was just: data, bag_label, meta before 2d patch sampling
 
             if self.check:
@@ -88,15 +90,15 @@ class SimpleTrainer:
             time_forward = time.time()
             with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
                 total_loss = 0
-                path = meta[2][0]  # was 4 before (4-->2)
-                source_label = get_source_label(path)
-                out = model.forward(data, label=bag_label, scan_end=num_patches, source_label=source_label,
-                                    patch_centers=patch_centers)
+                # path = meta[2][0]  # was 4 before (4-->2)
+
+                source_label = [get_source_label(p) for p in path]
+                out = model.forward(data, label=bag_label, training=train, bag_idx= bag_idx)
             forward_time = time.time() - time_forward
             forward_times.append(forward_time)
 
             Y_hat = out["predictions"]
-            Y_prob = out["scores"]
+            # Y_prob = out["scores"]
 
             outputs.append(Y_hat.detach().cpu())
             targets.append(bag_label.detach().cpu())
@@ -104,8 +106,16 @@ class SimpleTrainer:
             results["error"] += error
             # results["loss"] += total_loss.item()
 
-            rows.append({"bag_label": bag_label.cpu().item(), "predicted_label": Y_hat.cpu().item(), "path": path.split("/")[-1],
-                         "source_label": source_label})
+            individual_predictions = out["instance_scores"]
+            logit_class = individual_predictions > 0.05
+            patch_outputs.append(logit_class.cpu())
+            patch_targets.append(patch_class)
+
+
+            for i in range(len(bag_label)):
+                rows.append({"bag_label": bag_label[i].cpu().item(), "predicted_label": Y_hat[i].cpu().item(),
+                             "path": path[i].split("/")[-1],
+                             "source_label": source_label[i]})
 
             if step >= 6 and self.check:
                 break
@@ -122,7 +132,12 @@ class SimpleTrainer:
 
         outputs = np.concatenate(outputs)
         targets = np.concatenate(targets)
+        patch_outputs = np.concatenate(patch_outputs)
+        patch_targets = np.concatenate(patch_targets)
         f1 = f1_score(targets, outputs, average='macro')
+        patch_f1 = f1_score(patch_targets, patch_outputs, average='macro')
+        #patch_accuracy = ((patch_targets == patch_outputs).sum()) / sum(patch_targets)
+        results["patch_f1"] += patch_f1
         results["f1_score"] = f1
 
         print_multi_gpu(

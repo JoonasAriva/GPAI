@@ -61,8 +61,8 @@ def main(cfg: DictConfig):
     train_loader, test_loader = prepare_dataloader(cfg)
 
     # steps_in_epoch = 480  # with pärnu and kirc and kits its 1250, if just TUH, its 480
-    steps_in_epoch = 480
-    steps_in_epoch = steps_in_epoch // n_gpus
+    steps_in_epoch = 577*2 # with tuh extra
+    steps_in_epoch = (steps_in_epoch // n_gpus) // cfg.data.batch_size
     if cfg.data.dataloader == 'kidney_pasted':
         steps_in_epoch = 478 // n_gpus
 
@@ -212,8 +212,8 @@ def main(cfg: DictConfig):
             not_improved_epochs = 0
 
         else:
-            if not_improved_epochs > 20:
-                log_multi_gpu("Model has not improved for the last 10 epochs, stopping training", local_rank)
+            if not_improved_epochs > 30:
+                log_multi_gpu("Model has not improved for the last 30 epochs, stopping training", local_rank)
                 break
             not_improved_epochs += 1
 

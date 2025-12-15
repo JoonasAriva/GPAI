@@ -143,7 +143,7 @@ class Trainer:
         attention_scores["cases"] = [[], []]
         attention_scores["controls"] = [[], []]
         time_data = time.time()
-        for data, bag_label, meta, filtered_indices, num_patches, patch_centers in tepoch:
+        for data, bag_label, meta, patch_centers in tepoch:
             # was just: data, bag_label, meta before 2d patch sampling
 
             if self.check:
@@ -169,7 +169,7 @@ class Trainer:
                 path = meta[2][0]  # was 4 before (4-->2)
                 source_label = get_source_label(path)
                 cyst_label = self.get_cyst_label(path).cuda()
-                out = model.forward(data, label=bag_label, scan_end=num_patches, source_label=source_label,
+                out = model.forward(data, label=bag_label, scan_end=meta[5], source_label=source_label,
                                     patch_centers=patch_centers)
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
@@ -187,6 +187,11 @@ class Trainer:
                     error = calculate_classification_error(bag_label, Y_hat)
                     results["error"] += error
                     individual_predictions = out['individual_predictions'].flatten()
+
+                    patch_class = meta[4][0]
+                    logit_class = individual_predictions > 0
+                    patch_f1 = f1_score(patch_class, logit_class)
+                    results["patch_f1"] += patch_f1
 
                     if self.cysts:
                         cyst_hat = out['cyst_prediction']
@@ -215,12 +220,22 @@ class Trainer:
                         k = 2
                         values, indices = torch.topk(individual_predictions, k=k)
                         logit_sum_loss = -values.sum() / k
-                        logit_sum_loss = torch.maximum(logit_sum_loss, torch.ones_like(logit_sum_loss).cuda() * -4)
+                        logit_sum_loss = torch.sigmoid(10 * logit_sum_loss)
                         results["case_logit_loss"] += logit_sum_loss
                         total_loss += logit_sum_loss
 
                         if self.check:
                             print("logit sum case loss: ", logit_sum_loss)
+
+                    local_logit = True
+                    if local_logit and bag_label == 1:
+                        individual_predictions[individual_predictions < 0] = 0
+                        logit_locality_loss = 0.1 * ATTENTION_loss(individual_predictions, patch_centers)
+                        total_loss += logit_locality_loss
+                        results["local_logit_loss"] += logit_locality_loss
+
+                        if self.check:
+                            print("logit locality loss: ", logit_locality_loss)
 
                 if self.dann:
                     # domain_pred = out['domain_pred']

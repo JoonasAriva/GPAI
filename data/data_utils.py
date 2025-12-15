@@ -252,12 +252,13 @@ def get_kidney_datasets(type: str, no_lungs: bool = False, TUH_only: bool = Fals
 
     tuh_train_data_path = base_path + 'kidney/tuh_train/'
     tuh_test_data_path = base_path + 'kidney/tuh_test/'
+    tuh_extra_data_path = base_path + 'kidney/tuh_extra/'
     other_datasets_path = base_path + 'kidney/data'
 
     all_controls = []
     all_tumors = []
 
-    for data_path in [tuh_train_data_path, tuh_test_data_path]:
+    for data_path in [tuh_train_data_path, tuh_test_data_path, tuh_extra_data_path]:
         control_path = data_path + 'controls/images/' + type + '/*nii.gz'
         tumor_path = data_path + 'cases/images/' + type + '/*nii.gz'
 

@@ -21,6 +21,8 @@ from data.synth_dataloaders import SynthDataloader
 from depth_trainer import TrainerDepth, DepthLossV2, CompassLoss
 from depth_trainer2Dpatches import Trainer2DPatchDepth, DepthLossSamplePatches
 from depth_trainer3D import Trainer3DDepth, DepthLoss3D
+from focusMIL import FocusmilSingleBranch
+from focusMIL_trainer import FocusTrainer
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
     ResNetTransformer, TwoStageNet, TwoStageNetSimple, TransMIL, ResNetDepth, TransDepth, CompassModel, \
     CompassModelV2, DepthTumor, OrganModel, ResNetTwoHeads, ResnetTwoHeadsKNN
@@ -31,6 +33,39 @@ from trainer import Trainer
 
 
 # from trainer_twopass import Trainer
+# def var_collate_fn(batch):
+#     bags, labels, patch_class, patch_centers, x, paths = zip(*batch)
+#
+#     concat_bag = torch.cat(bags, dim=0)  # (N_total, C, H, W)
+#     concat_patch_class = torch.cat(patch_class, dim=0)
+#     concat_patch_centers = torch.cat(patch_centers, dim=0)
+#     # bag_idx: 0 for first bag (repeated N1 times), 1 for second, etc.
+#     bag_idx = torch.cat([torch.full((len(bag),), i, dtype=torch.long)
+#                          for i, bag in enumerate(bags)])
+#
+#     # paths = np.concatenate(paths)
+#     return concat_bag, bag_idx, torch.stack(labels), concat_patch_class, concat_patch_centers, paths
+
+def var_collate_fn(batch):
+    import time
+    t0 = time.time()
+
+    bags, labels, patch_class, patch_centers, x, paths = zip(*batch)
+
+    t1 = time.time()
+    concat_bag = torch.cat(bags, dim=0)
+    concat_patch_class = torch.cat(patch_class, dim=0)
+    concat_patch_centers = torch.cat(patch_centers, dim=0)
+
+    t2 = time.time()
+    bag_idx = torch.cat([
+        torch.full((len(bag),), i, dtype=torch.long)
+        for i, bag in enumerate(bags)
+    ])
+
+    print(f"unzip: {t1-t0:.3f}, cat: {t2-t1:.3f}, idx: {time.time()-t2:.3f}")
+    return concat_bag, bag_idx, torch.stack(labels), concat_patch_class, concat_patch_centers, paths
+
 
 
 def prepare_dataloader(cfg: DictConfig):
@@ -55,7 +90,8 @@ def prepare_dataloader(cfg: DictConfig):
             train_dataset = KidneyDataloader3D(type="train",
                                                augmentations=None if not cfg.data.data_augmentations else transforms,
                                                **dataloader_params)
-            test_dataset = KidneyDataloader3D(type="test", **dataloader_params)
+            test_dataset = KidneyDataloader3D(type="test",
+                                              **dataloader_params)
 
         else:
             train_dataset = KidneyDataloader(type="train",
@@ -63,7 +99,8 @@ def prepare_dataloader(cfg: DictConfig):
                                              **dataloader_params, random_experiment=cfg.data.random_experiment)
             test_dataset = KidneyDataloader(type="test", **dataloader_params)
 
-        loader_kwargs = {'num_workers': 1 if cfg.check else 4, 'pin_memory': True} if torch.cuda.is_available() else {}
+        loader_kwargs = {'num_workers': 1 if cfg.check else 7, 'pin_memory': True,
+                         'persistent_workers': True} if torch.cuda.is_available() else {}
 
         # create sampler for training set
         if cfg.data.spheres == False:
@@ -91,9 +128,11 @@ def prepare_dataloader(cfg: DictConfig):
             sampler_test = DistributedSampler(test_dataset, num_replicas=int(torch.cuda.device_count()),
                                               rank=int(os.environ["LOCAL_RANK"]),
                                               shuffle=True)
-        train_loader = data_utils.DataLoader(train_dataset, batch_size=cfg.data.batch_size, sampler=sampler,
+        train_loader = data_utils.DataLoader(train_dataset, collate_fn=var_collate_fn,batch_size=cfg.data.batch_size,
+                                             sampler=sampler,
                                              **loader_kwargs)
-        test_loader = data_utils.DataLoader(test_dataset, batch_size=cfg.data.batch_size, shuffle=False,
+        test_loader = data_utils.DataLoader(test_dataset, collate_fn=var_collate_fn, batch_size=cfg.data.batch_size,
+                                            shuffle=False,
                                             sampler=sampler_test if cfg.training.multi_gpu == True else None,
                                             **loader_kwargs)
 
@@ -192,6 +231,8 @@ def pick_model(cfg: DictConfig):
         model = ResNetTwoHeads(instnorm=cfg.model.inst_norm, resnet_type="34")
     elif cfg.model.name == 'resnetKNN':
         model = ResnetTwoHeadsKNN(instnorm=cfg.model.inst_norm, resnet_type="34")
+    elif cfg.model.name == 'focus':
+        model = FocusmilSingleBranch()
     return model
 
 
@@ -225,6 +266,10 @@ def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch, adv_optimizer=None, 
         loss_function = DepthLossSamplePatches().cuda()
         trainer = Trainer2DPatchDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                                       steps_in_epoch=steps_in_epoch)
+    elif cfg.model.name == "focus":
+        loss_function = torch.nn.BCEWithLogitsLoss(reduction='mean').cuda()
+        trainer = FocusTrainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                               steps_in_epoch=steps_in_epoch, warmup_steps=warmup_steps)
     else:
         loss_function = torch.nn.BCEWithLogitsLoss().cuda()
         trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
