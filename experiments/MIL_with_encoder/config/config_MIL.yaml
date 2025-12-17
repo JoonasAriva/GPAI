@@ -31,7 +31,7 @@ model:
   cysts: False
 
 data:
-  batch_size: 1
+  batch_size: 5
   take_every_nth_slice: 3
   data_augmentations: True
   plane: axial
@@ -50,4 +50,4 @@ data:
   spheres: True
   sample: uniform
 
-checkpoint: /users/arivajoo/results/MIL/train/focus/kidney_real/2025-12-11/00-37-21/checkpoints
+#checkpoint: /users/arivajoo/results/MIL/train/focus/kidney_real/2025-12-11/00-37-21/checkpoints

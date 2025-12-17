@@ -61,7 +61,7 @@ def main(cfg: DictConfig):
     train_loader, test_loader = prepare_dataloader(cfg)
 
     # steps_in_epoch = 480  # with pärnu and kirc and kits its 1250, if just TUH, its 480
-    steps_in_epoch = 577*2 # with tuh extra
+    steps_in_epoch = 577*2 # with extra data
     steps_in_epoch = (steps_in_epoch // n_gpus) // cfg.data.batch_size
     if cfg.data.dataloader == 'kidney_pasted':
         steps_in_epoch = 478 // n_gpus

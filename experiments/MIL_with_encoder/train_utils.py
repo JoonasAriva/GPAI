@@ -63,7 +63,7 @@ def var_collate_fn(batch):
         for i, bag in enumerate(bags)
     ])
 
-    print(f"unzip: {t1-t0:.3f}, cat: {t2-t1:.3f}, idx: {time.time()-t2:.3f}")
+    #print(f"unzip: {t1-t0:.3f}, cat: {t2-t1:.3f}, idx: {time.time()-t2:.3f}")
     return concat_bag, bag_idx, torch.stack(labels), concat_patch_class, concat_patch_centers, paths
 
 

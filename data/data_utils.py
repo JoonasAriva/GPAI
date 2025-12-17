@@ -209,14 +209,18 @@ def normalize_scan_new(x):
     return norm_x
 
 
-def normalize_scan_per_patch(x):
-    clipped_x = np.clip(x, -150, 250)  # soft tissue window
-    mins = np.min(clipped_x, axis=(1, 2, 3), keepdims=True)
-    maxs = np.max(clipped_x, axis=(1, 2, 3), keepdims=True)
-    norm_x = (clipped_x - mins) / (maxs - mins)
+def normalize_scan_per_patch(x: torch.Tensor):
+    # soft tissue window
+    x = torch.clamp(x, min=-150, max=250)
 
-    return norm_x
+    # compute per-patch min/max
+    mins = x.amin(dim=(1, 2, 3), keepdim=True)
+    maxs = x.amax(dim=(1, 2, 3), keepdim=True)
 
+    # avoid division by zero (important)
+    x.sub_(mins).div_(maxs - mins)
+
+    return x
 
 def remove_empty_tiles(data):
     # 3, 128, 128, 1520
@@ -373,7 +377,7 @@ def get_pasted_small_dateset():
 import time
 
 
-def remove_table_3d(img):
+def remove_table_3d(img, offline=False):
     start = time.time()
     thresh = -800  # in HU units, it should filter out air :)
     binary = img >= thresh
@@ -404,7 +408,10 @@ def remove_table_3d(img):
     maskedimg[~keep_mask] = -1024  # put regular min negative value back
     end = time.time()
     # print("time: ",end-start)
-    return maskedimg
+    if offline:
+        return maskedimg, keep_mask
+    else:
+        return maskedimg
 
 
 class CompassFilter:
