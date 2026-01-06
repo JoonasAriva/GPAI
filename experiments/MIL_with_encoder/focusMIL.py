@@ -13,12 +13,13 @@ class VariationalEncoder(nn.Module):
     def __init__(self, latent_dim=128, in_dim=512):
         super(VariationalEncoder, self).__init__()
         self.fc_initial = nn.Sequential(
-            nn.Linear(in_dim, 128),
+            nn.Linear(in_dim, 512),
             nn.ReLU(),
-            nn.Linear(128, 200),
+            nn.Linear(512, 256),
+            nn.ReLU(),
         )
-        self.mean = nn.Linear(200, latent_dim)
-        self.logvar = nn.Linear(200, latent_dim)
+        self.mean = nn.Linear(256, latent_dim)
+        self.logvar = nn.Linear(256, latent_dim)
 
     def forward(self, x):
         hidden = self.fc_initial(x)

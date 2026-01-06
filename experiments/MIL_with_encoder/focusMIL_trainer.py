@@ -120,6 +120,8 @@ class FocusTrainer:
         backprop_times = []
         outputs = []
         targets = []
+        patch_outputs = []
+        patch_targets = []
 
         time_data = time.time()
 
@@ -169,11 +171,11 @@ class FocusTrainer:
                 error = calculate_classification_error(bag_label, Y_hat)
                 results["error"] += error
 
-                # individual_predictions = out['individual_predictions'].flatten()
-                # patch_class = meta[4][0]
-                # logit_class = individual_predictions > 0
-                # patch_f1 = f1_score(patch_class, logit_class)
-                # results["patch_f1"] += patch_f1
+                individual_predictions = out["instance_scores"]
+                logit_class = individual_predictions > 0.05
+                patch_outputs.append(logit_class.cpu())
+                patch_targets.append(patch_class)
+
 
             if train:
                 time_backprop = time.time()
@@ -184,16 +186,8 @@ class FocusTrainer:
                 scaler.step(self.optimizer)
                 scaler.update()
                 self.optimizer.zero_grad(set_to_none=True)
+                self.scheduler.step()
 
-                if self.global_steps < self.warmup_steps:
-                    # Linear warmup
-                    scale = (self.global_steps + 1) / float(max(1, self.warmup_steps))
-                    for g in self.optimizer.param_groups:
-                        g['lr'] = g['initial_lr'] * scale
-                else:
-                    # Cosine schedule
-                    self.scheduler.step()
-                self.global_steps += 1
 
             results["loss"] += total_loss.item()
 
@@ -217,10 +211,18 @@ class FocusTrainer:
 
         f1 = 0
         if self.classification:
+
             outputs = np.concatenate(outputs)
             targets = np.concatenate(targets)
+            patch_outputs = np.concatenate(patch_outputs)
+            patch_targets = np.concatenate(patch_targets)
+
             f1 = f1_score(targets, outputs, average='macro')
+            patch_f1 = f1_score(patch_targets, patch_outputs, average='macro')
+
+            results["patch_f1"] = patch_f1
             results["f1_score"] = f1
+
 
         print_multi_gpu(
             f"data speed: {round(np.mean(data_times), 3)}, forward speed ,{round(np.mean(forward_times), 3)},backprop speed: , {round(np.mean(backprop_times), 3)}",

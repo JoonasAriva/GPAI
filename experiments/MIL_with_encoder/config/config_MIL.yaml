@@ -40,6 +40,7 @@ data:
   as_rgb: True
   roll_slices: True
   TUH_only: False
+  TUH_extra_data: False
   compass_filter: True
   important_slices_only: False
   no_lungs: False

@@ -222,6 +222,7 @@ def normalize_scan_per_patch(x: torch.Tensor):
 
     return x
 
+
 def remove_empty_tiles(data):
     # 3, 128, 128, 1520
     # find minimum values per patch
@@ -250,7 +251,7 @@ def remove_empty_tiles(data):
 #     return x
 
 
-def get_kidney_datasets(type: str, no_lungs: bool = False, TUH_only: bool = False):
+def get_kidney_datasets(type: str, no_lungs: bool = False, TUH_only: bool = False, TUH_extra_data: bool = False):
     # type = train, test
     base_path = '/scratch/project_465001979/ct_data/'  # lumi
 
@@ -261,8 +262,11 @@ def get_kidney_datasets(type: str, no_lungs: bool = False, TUH_only: bool = Fals
 
     all_controls = []
     all_tumors = []
-
-    for data_path in [tuh_train_data_path, tuh_test_data_path, tuh_extra_data_path]:
+    if type == 'test' or TUH_extra_data == True:
+        paths = [tuh_train_data_path, tuh_test_data_path, tuh_extra_data_path]
+    else:
+        paths = [tuh_train_data_path, tuh_test_data_path]
+    for data_path in paths:
         control_path = data_path + 'controls/images/' + type + '/*nii.gz'
         tumor_path = data_path + 'cases/images/' + type + '/*nii.gz'
 

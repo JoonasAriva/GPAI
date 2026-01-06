@@ -13,7 +13,7 @@ import wandb
 from omegaconf import OmegaConf, DictConfig
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-
+import math
 from multi_gpu_utils import print_multi_gpu, log_multi_gpu, reduce_results_dict
 
 # from torchinfo import summary
@@ -33,7 +33,6 @@ np.seterr(divide='ignore', invalid='ignore')
 os.environ["WANDB__SERVICE_WAIT"] = "300"
 
 torch.backends.cudnn.benchmark = True
-
 
 @hydra.main(config_path="config", config_name="config_MIL", version_base='1.1')
 def main(cfg: DictConfig):
@@ -144,13 +143,20 @@ def main(cfg: DictConfig):
     total_steps = number_of_epochs * steps_in_epoch
     warmup_steps = int(0.1 * total_steps)  # 10% warmup
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=total_steps - warmup_steps, eta_min=1e-7, last_epoch=-1
+    def lr_lambda(step):
+        if warmup_steps > 0 and step < warmup_steps:
+            return (step + 1) / warmup_steps
+
+        progress = min(
+            (step - warmup_steps) / max(1, total_steps - warmup_steps),
+            1.0
+        )
+        return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lr_lambda=lr_lambda
     )
-    # scheduler = optim.lr_scheduler.OneCycleLR(optimizer, total_steps=int(
-    #     number_of_epochs * steps_in_epoch / cfg.training.weight_update_freq),
-    #                                           pct_start=0.2, max_lr=[cfg.training.learning_rate,
-    #                                                                  cfg.training.learning_rate * 10] if cfg.experiment == "compass_twostage" else cfg.training.learning_rate)
     if "checkpoint" in cfg.keys():
         optimizer.load_state_dict(torch.load(os.path.join(cfg.checkpoint, 'current_optimizer.pth')))
         scheduler.load_state_dict(torch.load(os.path.join(cfg.checkpoint, 'current_scheduler.pth')))

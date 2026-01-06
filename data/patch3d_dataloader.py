@@ -156,7 +156,7 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
                  augmentations: callable = None, plane: str = 'axial',
                  center_crop: int = 120, no_lungs: bool = False,
                  pasted_experiment: bool = False,
-                 TUH_only: bool = False,
+                 TUH_only: bool = False, TUH_extra_data: bool = False,
                  compass_filtering: bool = False, model_type: str = '3D',
                  patch_size: tuple = (1, 150, 150), nr_of_patches: int = 100, sample: str = 'grid',
                  spheres: bool = False, process_masks: bool = False, **kwargs):
@@ -188,7 +188,7 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         #     control = get_TUH_control(type)
         #     tumor = []
         # else:
-        control, tumor = get_kidney_datasets(type, no_lungs=no_lungs, TUH_only=TUH_only)
+        control, tumor = get_kidney_datasets(type, no_lungs=no_lungs, TUH_only=TUH_only, TUH_extra_data=TUH_extra_data)
 
         control_labels = [[False]] * len(control)
         self.controls = len(control)
@@ -249,9 +249,29 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         self.mode = "refined"
         self.x = volume
 
-    def sample_patch_coordinates(self, x, sphere_options):
+    def find_depth_sample_rate(self, D, max_patches, axial_patches_nr, sample_rate):
+
+        how_many_patches = (D // sample_rate) * axial_patches_nr
+
+        if how_many_patches > max_patches:
+            return self.find_depth_sample_rate(D, max_patches, axial_patches_nr, sample_rate + 1)
+        elif how_many_patches <= max_patches:
+            return sample_rate
+
+    def find_axial_sample_rate(self, dimension, patch_size, edge_buffer, sample_rate):
+
+        axial_patches_nr = ((dimension - 2 * edge_buffer) // int(patch_size * sample_rate))
+
+        if axial_patches_nr < 2:
+
+            return self.find_axial_sample_rate(dimension, patch_size, edge_buffer, sample_rate - 0.1)
+        else:
+            return sample_rate
+
+    def sample_patch_coordinates(self, x, sphere_options, tumor_options=None):
 
         D, H, W = x.shape[-3:]
+
         edge_buffer = 70
         if self.kind == "2D":
             depth_buffer = 1
@@ -266,6 +286,7 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
 
         if sphere_options is not None and self.sample != 'grid':
             sphere_options = np.array(sphere_options)
+
             idxs = np.random.randint(len(sphere_options), size=self.nr_of_patches * 8, dtype=int)
 
             coordinates = sphere_options[idxs]
@@ -284,7 +305,15 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
                 if d < depth_buffer or h < edge_buffer or w < edge_buffer:
                     continue
                 possible_coords.append([coord])
-            coordinates = np.concatenate(possible_coords)[:self.nr_of_patches]
+
+            coordinates = np.concatenate(possible_coords)
+            if tumor_options is not None:
+                if len(tumor_options) > 0:
+                    tumor_idx = np.random.randint(len(tumor_options), size=1, dtype=int)
+                    tumor_coord = tumor_options[tumor_idx]
+                    coordinates = np.concatenate((tumor_coord, coordinates))
+
+            coordinates = coordinates[:self.nr_of_patches]
 
             return coordinates, patch_size
 
@@ -298,34 +327,48 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
 
             elif self.sample == "grid":
                 patch_centers = []
-                for d in range(depth_buffer, D - depth_buffer, patch_size[0] * 3):
-                    for h in range(edge_buffer, H - edge_buffer, int(patch_size[1])):
-                        for w in range(edge_buffer, W - edge_buffer, int(patch_size[2])):
+                # how many patches?
+                H_sample_rate = self.find_axial_sample_rate(H, patch_size[1], edge_buffer, sample_rate=1)
+                W_sample_rate = self.find_axial_sample_rate(W, patch_size[2], edge_buffer, sample_rate=1)
+                # print("axial sample_rate: ", H_sample_rate, W_sample_rate)
+                axial_patches_nr = ((((H - 2 * edge_buffer) // int(patch_size[1] * H_sample_rate)) + 1) *
+                                    (((W - 2 * edge_buffer) // int(patch_size[2] * W_sample_rate)) + 1))
+                # print("axial patches nr: ", axial_patches_nr)
+                sample_rate = self.find_depth_sample_rate(D, max_patches=120, axial_patches_nr=axial_patches_nr,
+                                                          sample_rate=3)
+                # print("depth sample_rate:", sample_rate)
+                # print("patch size: ", patch_size)
+                # print("d:", len(np.arange(depth_buffer, D - depth_buffer, int(patch_size[0] * sample_rate))))
+                # print("h: ", len(np.arange(edge_buffer, H - edge_buffer, int(patch_size[1] * H_sample_rate))))
+                # print("w: ", len(np.arange(edge_buffer, W - edge_buffer, int(patch_size[2] * W_sample_rate))))
+                for d in range(depth_buffer, D - depth_buffer, int(patch_size[0] * sample_rate)):
+                    for h in range(edge_buffer, H - edge_buffer, int(patch_size[1] * H_sample_rate)):
+                        for w in range(edge_buffer, W - edge_buffer, int(patch_size[2] * W_sample_rate)):
                             patch_centers.append([[d, h, w]])
                 patch_centers = np.concatenate(patch_centers)
+                # print("patch_centers:", patch_centers.shape)
 
-        if self.mode == "refined":
-            all_neighbors = []
-            radius = 30
-            n_samples = 50
-
-            for c in self.top_centers:
-                # Sample uniform offsets around the center
-                z, y, x = c
-                min_bounds = np.array(
-                    [-min(radius, max(z - depth_buffer, 0)), -min(radius, max(y - edge_buffer, 0)),
-                     -min(radius, max(x - edge_buffer, 0))])
-                max_bounds = np.array(
-                    [min(radius, max(D - depth_buffer - z, 0)), min(radius, max((H - edge_buffer - y, 0))),
-                     min(radius, max(W - edge_buffer - x, 0))])
-
-                offsets = np.random.uniform(min_bounds, max_bounds,
-                                            size=np.array([n_samples, 3]))
-
-                neighbors = torch.squeeze(c) + offsets
-                all_neighbors.append(neighbors)
-                patch_centers = torch.cat(all_neighbors, dim=0)
-
+        # if self.mode == "refined":
+        #     all_neighbors = []
+        #     radius = 30
+        #     n_samples = 50
+        #
+        #     for c in self.top_centers:
+        #         # Sample uniform offsets around the center
+        #         z, y, x = c
+        #         min_bounds = np.array(
+        #             [-min(radius, max(z - depth_buffer, 0)), -min(radius, max(y - edge_buffer, 0)),
+        #              -min(radius, max(x - edge_buffer, 0))])
+        #         max_bounds = np.array(
+        #             [min(radius, max(D - depth_buffer - z, 0)), min(radius, max((H - edge_buffer - y, 0))),
+        #              min(radius, max(W - edge_buffer - x, 0))])
+        #
+        #         offsets = np.random.uniform(min_bounds, max_bounds,
+        #                                     size=np.array([n_samples, 3]))
+        #
+        #         neighbors = torch.squeeze(c) + offsets
+        #         all_neighbors.append(neighbors)
+        #         patch_centers = torch.cat(all_neighbors, dim=0)
         return patch_centers, patch_size
 
     def __len__(self):
@@ -364,7 +407,7 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         preproc_path = f"/scratch/project_465001979/ct_data/kidney/preprocess_files/{case_id}_preproc.npz"
         pre_proc = np.load(preproc_path)
         mask = torch.as_tensor(pre_proc["mask"], dtype=torch.bool)
-        x[~mask] = 1024
+        x[~mask] = -1024
         # x = remove_table_3d(x)
         t41 = time.time()
         # box_start_, box_end_ = self.air_cropper.compute_bounding_box(x)
@@ -402,11 +445,20 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         x = normalize_scan_per_patch(x)
         t5 = time.time()
         if self.spheres:
-            foreground = (kidney_mask > 0).to(torch.bool)  # already boolean
+            # keep only the kidney slices
+            foreground = (kidney_mask.as_tensor() > 0).to(torch.bool)  # already boolean
+            depth_foreground_mask = foreground.sum(dim=(1, 2)) > 0
+            x = x[:, depth_foreground_mask, :, :]
+            kidney_mask = kidney_mask[depth_foreground_mask, :, :]
+
+            # calculate options for uniform sampling on the reduced volumes
+            foreground = (kidney_mask.as_tensor() > 0).to(torch.bool)  # already boolean
+            tumor_foreground = (kidney_mask.as_tensor() == 2).to(torch.bool)  # already boolean
             options = torch.nonzero(foreground, as_tuple=False)  # shape (M,3)
+            tumor_options = torch.nonzero(tumor_foreground, as_tuple=False)
 
-        patch_centers, patch_size = self.sample_patch_coordinates(x, sphere_options=options if self.spheres else None)
-
+        patch_centers, patch_size = self.sample_patch_coordinates(x, sphere_options=options,
+                                                                  tumor_options=tumor_options)
         kidney_mask = kidney_mask.unsqueeze(0)
 
         combined = torch.cat([x, kidney_mask], dim=0)
@@ -429,11 +481,15 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         mask_patches = torch.squeeze(mask_patches[keep_mask][:, 0])
         patch_class = ((2.5 > mask_patches) & (mask_patches > 1.5)).sum(axis=(1, 2))
         patch_class = patch_class > 0
-        try:
-            patch_centers = patch_centers[keep_mask]
-        except:
-            print("patch centers", patch_centers.shape)
+        # try:
+        patch_centers = patch_centers[keep_mask]
+        # except:
+        #    print("patch centers", patch_centers.shape)
 
+        # take max 120 patches (GPU memory limitations)
+
+        # patches = patches[:120]
+        # patch_class = patch_class[:120]
         if self.augmentations is not None:
             x = self.augmentations(x)
 

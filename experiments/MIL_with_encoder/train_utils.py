@@ -63,9 +63,8 @@ def var_collate_fn(batch):
         for i, bag in enumerate(bags)
     ])
 
-    #print(f"unzip: {t1-t0:.3f}, cat: {t2-t1:.3f}, idx: {time.time()-t2:.3f}")
+    # print(f"unzip: {t1-t0:.3f}, cat: {t2-t1:.3f}, idx: {time.time()-t2:.3f}")
     return concat_bag, bag_idx, torch.stack(labels), concat_patch_class, concat_patch_centers, paths
-
 
 
 def prepare_dataloader(cfg: DictConfig):
@@ -83,6 +82,7 @@ def prepare_dataloader(cfg: DictConfig):
             'roll_slices': cfg.data.roll_slices, 'model_type': cfg.model.model_type,
             'generate_spheres': True if cfg.data.dataloader == 'kidney_synth' else False, 'patchify': cfg.data.patchify,
             'no_lungs': cfg.data.no_lungs, "pasted_experiment": pasted_experiment, 'TUH_only': cfg.data.TUH_only,
+            'TUH_extra_data': cfg.data.TUH_extra_data,
             'compass_filtering': cfg.data.compass_filter, "nr_of_patches": cfg.data.nr_of_patches,
             'spheres': cfg.data.spheres, 'sample': cfg.data.sample}
 
@@ -99,8 +99,8 @@ def prepare_dataloader(cfg: DictConfig):
                                              **dataloader_params, random_experiment=cfg.data.random_experiment)
             test_dataset = KidneyDataloader(type="test", **dataloader_params)
 
-        loader_kwargs = {'num_workers': 1 if cfg.check else 7, 'pin_memory': True,
-                         'persistent_workers': True} if torch.cuda.is_available() else {}
+        loader_kwargs = {'num_workers': 5 if cfg.check else 6, 'pin_memory': True,
+                         'persistent_workers': False if cfg.check else True} if torch.cuda.is_available() else {}
 
         # create sampler for training set
         if cfg.data.spheres == False:
@@ -128,7 +128,7 @@ def prepare_dataloader(cfg: DictConfig):
             sampler_test = DistributedSampler(test_dataset, num_replicas=int(torch.cuda.device_count()),
                                               rank=int(os.environ["LOCAL_RANK"]),
                                               shuffle=True)
-        train_loader = data_utils.DataLoader(train_dataset, collate_fn=var_collate_fn,batch_size=cfg.data.batch_size,
+        train_loader = data_utils.DataLoader(train_dataset, collate_fn=var_collate_fn, batch_size=cfg.data.batch_size,
                                              sampler=sampler,
                                              **loader_kwargs)
         test_loader = data_utils.DataLoader(test_dataset, collate_fn=var_collate_fn, batch_size=cfg.data.batch_size,
@@ -162,7 +162,8 @@ def prepare_dataloader(cfg: DictConfig):
         test_dataset = AbdomenAtlasLoader(type="test",
                                           augmentations=None,
                                           **dataloader_params)
-        loader_kwargs = {'num_workers': 7, 'pin_memory': True} if torch.cuda.is_available() else {}
+        loader_kwargs = {'num_workers': 6, 'pin_memory': True,
+                         'prefetch_factor': 4} if torch.cuda.is_available() else {}
 
         train_loader = data_utils.DataLoader(train_dataset, batch_size=1, shuffle=True, **loader_kwargs)
         test_loader = data_utils.DataLoader(test_dataset, batch_size=1, shuffle=False, **loader_kwargs)
@@ -303,23 +304,49 @@ def prepare_optimizer(cfg, model):
             return optimizer, optimizer_adv
     else:
 
-        # separate params
-        backbone_params = []
-        new_params = []
+        # Groups
+        backbone_decay = []
+        backbone_no_decay = []
+        new_decay = []
+        new_no_decay = []
+
         for name, p in model.named_parameters():
             if not p.requires_grad:
                 continue
-            if name.startswith("model."):  # adjust to your naming convention
-                backbone_params.append(p)
+
+            # Determine if parameter should have NO weight decay
+            # Exclude:
+            # - All biases
+            # - LayerNorm / GroupNorm / BatchNorm weight and bias
+            if (name.endswith(".bias") or
+                    "LayerNorm.weight" in name or "LayerNorm.bias" in name or
+                    ".norm.weight" in name or ".norm.bias" in name or  # This catches your MyGroupNorm
+                    "BatchNorm" in name):
+                no_decay = True
             else:
-                new_params.append(p)
+                no_decay = False
 
+            # Classify as backbone or new
+            if name.startswith("model."):  # adjust prefix if needed
+                if no_decay:
+                    backbone_no_decay.append(p)
+                else:
+                    backbone_decay.append(p)
+            else:
+                if no_decay:
+                    new_no_decay.append(p)
+                else:
+                    new_decay.append(p)
+
+        # Optimizer with separate LR and proper weight decay
         optimizer = optim.AdamW([
-            {'params': backbone_params, 'lr': 5e-5, 'weight_decay': cfg.training.weight_decay},
-            {'params': new_params, 'lr': 1e-4, 'weight_decay': cfg.training.weight_decay},
-        ], betas=(0.9, 0.999), eps=1e-8)
+            # Backbone (usually pretrained)
+            {'params': backbone_decay, 'lr': 5e-5, 'weight_decay': cfg.training.weight_decay},
+            {'params': backbone_no_decay, 'lr': 5e-5, 'weight_decay': 0.0},
 
-        # optimizer = optim.Adam(model.parameters(), lr=cfg.training.learning_rate, betas=(0.9, 0.999),
-        #                        weight_decay=cfg.training.weight_decay)
+            # New / task-specific layers
+            {'params': new_decay, 'lr': 1e-4, 'weight_decay': cfg.training.weight_decay},
+            {'params': new_no_decay, 'lr': 1e-4, 'weight_decay': 0.0},
+        ], betas=(0.9, 0.999), eps=1e-8)
 
     return optimizer

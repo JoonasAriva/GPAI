@@ -137,7 +137,7 @@ class SimpleTrainer:
         f1 = f1_score(targets, outputs, average='macro')
         patch_f1 = f1_score(patch_targets, patch_outputs, average='macro')
         #patch_accuracy = ((patch_targets == patch_outputs).sum()) / sum(patch_targets)
-        results["patch_f1"] += patch_f1
+        results["patch_f1"] = patch_f1
         results["f1_score"] = f1
 
         print_multi_gpu(
