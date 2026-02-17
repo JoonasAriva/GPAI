@@ -30,7 +30,7 @@ from models3d import ResNetDepth2dPatches, ResNet3DDepth, TransAttention, ResNet
 from rel_models import ResNetRel
 from swin_models import SWINCompass, SWINClassifier
 from trainer import Trainer
-#
+
 ##
 # from trainer_twopass import Trainer
 # def var_collate_fn(batch):

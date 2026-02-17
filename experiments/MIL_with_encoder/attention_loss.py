@@ -52,7 +52,7 @@ class AttentionLoss(DepthLossV2):
 
         return loss_matrix.sum() / (len(attention) ** 2)  # + diag_loss
 
-
+#aaa
 class AttentionLossPatches2D(DepthLossV2):
     def __init__(self, step):
         super().__init__(step)

@@ -52,13 +52,8 @@ class DepthLoss2DPatches(nn.Module):
         # We define the "correct" order to be positive
         idxs = distance_matrix >= 0
 
-        # try:
         distance_matrix[idxs] = distance_matrix[idxs] - 0.2 * steps[idxs]
-        # except:
-        #     print("pred shape: ", predictions.shape)
-        #     print("spacings: ", new_spacing)
-        #     print("distance_matrix: ", distance_matrix.shape)
-        #     print("idxs: ", idxs.shape)
+
         idxs = distance_matrix >= 0  # this is updated now
         # remove the remaining part of allowed step
         distance_matrix[idxs] = torch.maximum(distance_matrix[idxs] - 0.8 * steps[idxs],
@@ -95,36 +90,48 @@ class DepthLossSamplePatches(nn.Module):
         super().__init__()
 
     def calc_manhattan_distances_in_3d(self, matrix):
+        # calculate manhattan distances between all coordinates
+        # we go from N,3 --> N,N,3
         return matrix.reshape(-1, 1, 3) - matrix.float()
 
     def forward(self, predictions, real_coordinates):
+        # for 3d: inputs should be in the shape of (N,3)
+
+        # scale real coordinates with respectable spacing values (in millimeters)
         voxel_spacing = torch.tensor([2.0, 0.84, 0.84])
         scaled_coordinates = real_coordinates * voxel_spacing
-        steps = self.calc_manhattan_distances_in_3d(scaled_coordinates).float().cuda()
 
-        # multiply indexing tensor with reordered 3d spacings
-
-        # calculate the manhattan distances for predictions and index matrix
+        # calculate the manhattan distances for predictions and real coordinates
+        # for (N,3) predictions we get a distance matrix by the size of N,N,3
+        true_distance = self.calc_manhattan_distances_in_3d(scaled_coordinates).float().cuda()
         pred_distance_matrix = self.calc_manhattan_distances_in_3d(predictions)
+
+        # distance matrices are symmetrical, we use torch.tril to remove redundant symmetrical part
         for i in range(3):
-            steps[:, :, i] = torch.tril(steps[:, :, i])
+            true_distance[:, :, i] = torch.tril(true_distance[:, :, i])
             pred_distance_matrix[:, :, i] = torch.tril(pred_distance_matrix[:, :, i])
 
-        pred_distance_norm = torch.norm(pred_distance_matrix, dim=2)
-        steps_norm = torch.norm(steps, dim=2)
-
         # THE DECOUPLED PART
-        pred_distance_matrix = pred_distance_matrix - steps
+        # produce errors for each dimension individually (z,y,x), dimensions are decoupled
+        decoupled_error = pred_distance_matrix - true_distance
 
-        losses = [pred_distance_matrix[:, :, i].abs().sum(dim=(0, 1)) / (len(pred_distance_matrix) ** 2) for i in
-                  range(3)]
+        # sum errors together
+        # divide with the size of the matrix to normalize
+        # do it for all three dimensions separately
+        zyx_losses = [decoupled_error[:, :, i].abs().sum(dim=(0, 1)) / (len(decoupled_error) ** 2) for i in
+                      range(3)]  # this loss is tuple of size 3
 
         # THE COUPLED PART
-        pred_distance_norm = pred_distance_norm - steps_norm
+        # produce errors for euclidian distance: distance = np.sqrt(x**2+y**2+z**2), dimensions are coupled
 
-        norm_loss = pred_distance_norm.abs().sum() / (len(pred_distance_matrix) ** 2)
+        pred_distance_norm = torch.norm(pred_distance_matrix, dim=2)  # go from N,N,3 --> N,N
+        true_distance_norm = torch.norm(true_distance, dim=2)
 
-        return losses, norm_loss  # order:  y_loss, x_loss, z_loss # really should be z,y,x
+        coupled_error = pred_distance_norm - true_distance_norm
+
+        norm_loss = coupled_error.abs().sum() / (len(coupled_error) ** 2)
+
+        return zyx_losses, norm_loss
 
 
 class Trainer2DPatchDepth:

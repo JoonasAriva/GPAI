@@ -15,13 +15,14 @@ class ResNet3DDepth(nn.Module):
         super().__init__()
 
         self.backbone = resnet50(pretrained=False, spatial_dims=3, n_input_channels=1, num_classes=3)
-        print("using resnet50")
-        # --- 2. Strip off the final classifier to get feature vectors ---
-        # The final layer is model.fc
-        num_features = self.backbone.fc.in_features
+        print("Using Resnet50")
 
-        self.cls_head = nn.Linear(num_features, 3)
+        # The final layer is model.fc
+        # Find final feature vector dimensions
+        num_features = self.backbone.fc.in_features
         self.backbone.fc = nn.Identity()  # now forward pass outputs feature vectors
+        # Add own classifier head
+        self.cls_head = nn.Linear(num_features, 3)
 
     def forward(self, x):
         feats = self.backbone(x)

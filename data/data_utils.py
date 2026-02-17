@@ -6,29 +6,29 @@ import matplotlib
 import nibabel as nib
 import numpy as np
 import pandas as pd
-import raster_geometry as rg
+#import raster_geometry as rg
 import torch
 import torch.nn.functional as F
 from scipy import ndimage as ndi
 from skimage import morphology
-
+import math
 matplotlib.rcParams['animation.embed_limit'] = 2 ** 128
 
 
-def add_random_sphere(image):
-    size = image.shape[1]
-    height = image.shape[2]
-
-    z, y, x = np.random.uniform(0.1, 0.9), np.random.uniform(0.2, 0.8), np.random.uniform(0.2, 0.8)
-
-    radius = np.random.randint(20, 40)
-
-    sphere_mask = rg.sphere((size, size, height), radius, (y, x, z))
-    gaussian_noise = torch.DoubleTensor(np.random.randn(size, size, height) * 0.2 + 2.5)
-
-    image[sphere_mask] = gaussian_noise[sphere_mask]
-
-    return image
+# def add_random_sphere(image):
+#     size = image.shape[1]
+#     height = image.shape[2]
+#
+#     z, y, x = np.random.uniform(0.1, 0.9), np.random.uniform(0.2, 0.8), np.random.uniform(0.2, 0.8)
+#
+#     radius = np.random.randint(20, 40)
+#
+#     sphere_mask = rg.sphere((size, size, height), radius, (y, x, z))
+#     gaussian_noise = torch.DoubleTensor(np.random.randn(size, size, height) * 0.2 + 2.5)
+#
+#     image[sphere_mask] = gaussian_noise[sphere_mask]
+#
+#     return image
 
 
 def get_dataset_paths(datasets: List[str], dataset_type: str, percentage: float = 1, return_predictions: bool = False):
@@ -249,7 +249,7 @@ def remove_empty_tiles(data):
 #         x[np.where(segmentation == 0)] *= 0.2
 #
 #     return x
-
+## add new comment
 
 def get_kidney_datasets(type: str, no_lungs: bool = False, TUH_only: bool = False, TUH_extra_data: bool = False):
     # type = train, test

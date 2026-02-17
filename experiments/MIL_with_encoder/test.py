@@ -92,7 +92,7 @@ def main(cfg: DictConfig):
     else:
         if torch.cuda.is_available():
             model.cuda()
-
+    # random comment
     trainer = SimpleTrainer(cfg)
     #loss_function = torch.nn.BCEWithLogitsLoss(reduction='mean').cuda()
     #optimizer = prepare_optimizer(cfg, model)

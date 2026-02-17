@@ -21,7 +21,7 @@ from multi_gpu_utils import print_multi_gpu, log_multi_gpu, reduce_results_dict
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
 
-from train_utils import prepare_dataloader, pick_model, pick_trainer, prepare_optimizer
+from train_utils2 import prepare_dataloader, pick_model, pick_trainer, prepare_optimizer
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 # Training settings
@@ -114,7 +114,7 @@ def main(cfg: DictConfig):
     resume_run = False
     if "checkpoint" in cfg.keys():
         print("Using checkpoint", cfg.checkpoint)
-        sd = torch.load(os.path.join(cfg.checkpoint, 'best_model.pth'), map_location='cuda:0')
+        sd = torch.load(os.path.join(cfg.checkpoint, 'last_model.pth'), map_location='cuda:0')
         new_sd = {key.replace("module.", ""): value for key, value in sd.items()}
         model.load_state_dict(state_dict=new_sd)
         resume_run = True
@@ -126,7 +126,7 @@ def main(cfg: DictConfig):
         model = DDP(  # <- We need to wrap the model with DDP
             model,
             device_ids=[local_rank],  # <- and specify the device_ids/output_device
-            find_unused_parameters=True  # was True before
+            find_unused_parameters=False  # was True before
         )
     else:
         if torch.cuda.is_available():
@@ -165,7 +165,7 @@ def main(cfg: DictConfig):
                            warmup_steps=warmup_steps)
 
     if not cfg.check and local_rank == 0:
-        experiment = wandb.init(project=proj_name, anonymous='must')
+        experiment = wandb.init(project=proj_name, anonymous='must',settings=wandb.Settings(init_timeout=120))
         if not resume_run:
             experiment.config.update(
                 dict(epochs=cfg.training.epochs,

@@ -4,7 +4,7 @@ from glob import glob
 
 import nibabel as nib
 import numpy as np
-import raster_geometry as rg
+#import raster_geometry as rg
 import torch
 import torchio as tio
 from monai.transforms import *
@@ -122,20 +122,20 @@ class KidneyDataloader(torch.utils.data.Dataset):
         else:
             return nth_slice
 
-    def add_synth_tumor(self, scan, synth_coords, add_hole):
-        radius = synth_coords["circle_radius"]
-        x, y, z = synth_coords["xyz"]
-        sphere_mask = rg.sphere(scan.shape, radius, (x, y, z))
-        if add_hole:
-            cx, cy, cz = synth_coords["circ_in_circ_xyz"]
-            hole_radius = synth_coords["circ_in_circ_radius"]
-            hole_mask = rg.sphere(scan.shape, hole_radius, (cx, cy, cz))
-
-            sphere_mask = np.logical_xor(sphere_mask, hole_mask)
-
-        gaussian_noise_circle = torch.FloatTensor(np.random.randn(*scan.shape) * 20 + 210)
-        scan[sphere_mask] = gaussian_noise_circle[sphere_mask]
-        return scan
+    # def add_synth_tumor(self, scan, synth_coords, add_hole):
+    #     radius = synth_coords["circle_radius"]
+    #     x, y, z = synth_coords["xyz"]
+    #     sphere_mask = rg.sphere(scan.shape, radius, (x, y, z))
+    #     if add_hole:
+    #         cx, cy, cz = synth_coords["circ_in_circ_xyz"]
+    #         hole_radius = synth_coords["circ_in_circ_radius"]
+    #         hole_mask = rg.sphere(scan.shape, hole_radius, (cx, cy, cz))
+    #
+    #         sphere_mask = np.logical_xor(sphere_mask, hole_mask)
+    #
+    #     gaussian_noise_circle = torch.FloatTensor(np.random.randn(*scan.shape) * 20 + 210)
+    #     scan[sphere_mask] = gaussian_noise_circle[sphere_mask]
+    #     return scan
 
     def __len__(self):
         # a DataSet must know its size
@@ -163,11 +163,11 @@ class KidneyDataloader(torch.utils.data.Dataset):
         if self.generate_spheres:
             if self.type == "test":
                 synth_coords = self.synth_data[index]
-                x = self.add_synth_tumor(x, synth_coords, add_hole=y)
+                #x = self.add_synth_tumor(x, synth_coords, add_hole=y)
             elif self.type == "train":
                 synth_coords = make_single_sphere_coords()
                 y = torch.Tensor([np.random.choice(a=[False, True])])
-                x = self.add_synth_tumor(x, synth_coords, add_hole=y)
+                #x = self.add_synth_tumor(x, synth_coords, add_hole=y)
 
         nr_of_original_slices = x.shape[-1]
 

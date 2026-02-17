@@ -113,7 +113,7 @@ class FocusTrainer:
         else:
             model.eval()
 
-        scaler = torch.cuda.amp.GradScaler()
+        scaler = torch.amp.GradScaler('cuda')
         self.optimizer.zero_grad(set_to_none=True)
         data_times = []
         forward_times = []
@@ -145,7 +145,7 @@ class FocusTrainer:
             data = data.cuda(non_blocking=True).to(dtype=torch.float16)
             bag_label = bag_label.cuda(non_blocking=True)
             time_forward = time.time()
-            with torch.cuda.amp.autocast(), torch.no_grad() if not train else nullcontext():
+            with torch.amp.autocast(device_type='cuda'), torch.no_grad() if not train else nullcontext():
 
                 out = model.forward(data, bag_idx, training=train)
                 bag_label = bag_label.view(-1, 1).float()  # [B]->[B,1]

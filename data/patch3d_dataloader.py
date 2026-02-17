@@ -3,7 +3,7 @@ import time
 
 import nibabel as nib
 import numpy as np
-import raster_geometry as rg
+# import raster_geometry as rg
 import torch.nn.functional as F
 from monai.transforms import *
 
@@ -137,18 +137,18 @@ def resize_array(array, current_spacing, target_spacing, mask: bool = False):
     return resized_array
 
 
-def add_sphere(scan, synth_coords, rng, simplified=False):
-    radius = rng.integers(25, 30)  # 15-20
-
-    relative_coords = tuple(round(i / j, 3) for i, j in zip(synth_coords, scan.shape))
-    sphere_mask = rg.sphere(scan.shape, radius, (relative_coords))
-
-    gaussian_noise_circle = torch.FloatTensor(np.ones_like(scan) * 1000)
-    scan[sphere_mask] = gaussian_noise_circle[sphere_mask]
-    if simplified:
-        gaussian_noise = torch.FloatTensor(np.random.rand(*scan.shape) * 20)
-        scan[~sphere_mask] = gaussian_noise[~sphere_mask]
-    return scan
+# def add_sphere(scan, synth_coords, rng, simplified=False):
+#     radius = rng.integers(25, 30)  # 15-20
+#
+#     relative_coords = tuple(round(i / j, 3) for i, j in zip(synth_coords, scan.shape))
+#     sphere_mask = rg.sphere(scan.shape, radius, (relative_coords))
+#
+#     gaussian_noise_circle = torch.FloatTensor(np.ones_like(scan) * 1000)
+#     scan[sphere_mask] = gaussian_noise_circle[sphere_mask]
+#     if simplified:
+#         gaussian_noise = torch.FloatTensor(np.random.rand(*scan.shape) * 20)
+#         scan[~sphere_mask] = gaussian_noise[~sphere_mask]
+#     return scan
 
 
 class KidneyDataloader3D(torch.utils.data.Dataset):
@@ -298,6 +298,12 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
             coordinates = coordinates + offsets
             possible_coords = []
 
+            if tumor_options is not None:
+                if len(tumor_options) > 0:
+                    tumor_idx = np.random.randint(len(tumor_options), size=1, dtype=int)
+                    tumor_coord = tumor_options[tumor_idx]
+                    coordinates = np.concatenate((tumor_coord, coordinates))
+
             for coord in coordinates:
                 d, h, w = coord
                 if d > D - depth_buffer or h > H - edge_buffer or w > W - edge_buffer:
@@ -307,12 +313,6 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
                 possible_coords.append([coord])
 
             coordinates = np.concatenate(possible_coords)
-            if tumor_options is not None:
-                if len(tumor_options) > 0:
-                    tumor_idx = np.random.randint(len(tumor_options), size=1, dtype=int)
-                    tumor_coord = tumor_options[tumor_idx]
-                    coordinates = np.concatenate((tumor_coord, coordinates))
-
             coordinates = coordinates[:self.nr_of_patches]
 
             return coordinates, patch_size
@@ -348,27 +348,6 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
                 patch_centers = np.concatenate(patch_centers)
                 # print("patch_centers:", patch_centers.shape)
 
-        # if self.mode == "refined":
-        #     all_neighbors = []
-        #     radius = 30
-        #     n_samples = 50
-        #
-        #     for c in self.top_centers:
-        #         # Sample uniform offsets around the center
-        #         z, y, x = c
-        #         min_bounds = np.array(
-        #             [-min(radius, max(z - depth_buffer, 0)), -min(radius, max(y - edge_buffer, 0)),
-        #              -min(radius, max(x - edge_buffer, 0))])
-        #         max_bounds = np.array(
-        #             [min(radius, max(D - depth_buffer - z, 0)), min(radius, max((H - edge_buffer - y, 0))),
-        #              min(radius, max(W - edge_buffer - x, 0))])
-        #
-        #         offsets = np.random.uniform(min_bounds, max_bounds,
-        #                                     size=np.array([n_samples, 3]))
-        #
-        #         neighbors = torch.squeeze(c) + offsets
-        #         all_neighbors.append(neighbors)
-        #         patch_centers = torch.cat(all_neighbors, dim=0)
         return patch_centers, patch_size
 
     def __len__(self):
@@ -407,7 +386,13 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         preproc_path = f"/scratch/project_465001979/ct_data/kidney/preprocess_files/{case_id}_preproc.npz"
         pre_proc = np.load(preproc_path)
         mask = torch.as_tensor(pre_proc["mask"], dtype=torch.bool)
-        x[~mask] = -1024
+        try:
+            x[~mask] = -1024
+        except IndexError:
+            print("preproc path:", preproc_path)
+            print("mask:", mask.shape)
+            print("x: ", x.shape)
+            print("case id: ", case_id)
         # x = remove_table_3d(x)
         t41 = time.time()
         # box_start_, box_end_ = self.air_cropper.compute_bounding_box(x)

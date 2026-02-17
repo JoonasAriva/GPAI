@@ -40,8 +40,8 @@ data:
   as_rgb: True
   roll_slices: True
   TUH_only: False
-  TUH_extra_data: False
-  compass_filter: True
+  TUH_extra_data: True
+  compass_filter: False
   important_slices_only: False
   no_lungs: False
   patchify: True
@@ -51,4 +51,4 @@ data:
   spheres: True
   sample: uniform
 
-#checkpoint: /users/arivajoo/results/MIL/train/focus/kidney_real/2025-12-11/00-37-21/checkpoints
+checkpoint: /users/arivajoo/results/MIL/train/focus/kidney_real/2026-02-16/13-55-24/checkpoints
