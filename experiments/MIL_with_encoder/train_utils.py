@@ -1,4 +1,5 @@
 from __future__ import print_function
+
 #
 import os
 
@@ -17,7 +18,7 @@ from compass_two_stage_trainer import TwoStageCompassLoss, TrainerCompassTwoStag
 from data.DistriputedDataCustomSampler import DistributedSamplerWrapper
 from data.kidney_dataloader import KidneyDataloader, AbdomenAtlasLoader
 from data.patch3d_dataloader import KidneyDataloader3D
-#from data.synth_dataloaders import SynthDataloader
+# from data.synth_dataloaders import SynthDataloader
 from depth_trainer import TrainerDepth, DepthLossV2, CompassLoss
 from depth_trainer2Dpatches import Trainer2DPatchDepth, DepthLossSamplePatches
 from depth_trainer3D import Trainer3DDepth, DepthLoss3D
@@ -30,41 +31,113 @@ from models3d import ResNetDepth2dPatches, ResNet3DDepth, TransAttention, ResNet
 from rel_models import ResNetRel
 from swin_models import SWINCompass, SWINClassifier
 from trainer import Trainer
-#
-##
-# from trainer_twopass import Trainer
+from trainer_simple import SimpleTrainer
+
+
 # def var_collate_fn(batch):
-#     bags, labels, patch_class, patch_centers, x, paths = zip(*batch)
+#     import time
+#     t0 = time.time()
 #
-#     concat_bag = torch.cat(bags, dim=0)  # (N_total, C, H, W)
+#     bags, labels, cyst_labels, patch_class, cyst_class, patch_centers, x, paths = zip(*batch)
+#
+#     t1 = time.time()
+#     concat_bag = torch.cat(bags, dim=0)
 #     concat_patch_class = torch.cat(patch_class, dim=0)
+#     concat_patch_class_cyst = torch.cat(patch_class, dim=0)
 #     concat_patch_centers = torch.cat(patch_centers, dim=0)
-#     # bag_idx: 0 for first bag (repeated N1 times), 1 for second, etc.
-#     bag_idx = torch.cat([torch.full((len(bag),), i, dtype=torch.long)
-#                          for i, bag in enumerate(bags)])
 #
-#     # paths = np.concatenate(paths)
-#     return concat_bag, bag_idx, torch.stack(labels), concat_patch_class, concat_patch_centers, paths
+#     t2 = time.time()
+#     bag_idx = torch.cat([
+#         torch.full((len(bag),), i, dtype=torch.long)
+#         for i, bag in enumerate(bags)
+#     ])
+#
+#     # print(f"unzip: {t1-t0:.3f}, cat: {t2-t1:.3f}, idx: {time.time()-t2:.3f}")
+#     return concat_bag, bag_idx, torch.stack(labels), torch.stack(
+#         cyst_labels), concat_patch_class, concat_patch_class_cyst, concat_patch_centers, paths
 
-def var_collate_fn(batch):
-    import time
-    t0 = time.time()
 
-    bags, labels, patch_class, patch_centers, x, paths = zip(*batch)
+def var_collate_fn(batch):  # batch = list[dict]
 
-    t1 = time.time()
+    # Extract all dicts
+    # We assume every dict has the same keys (enforced by Dataset)
+    keys = batch[0].keys()
+
+    # Convert list[dict] → dict[list/tensor]
+    batched = {k: [sample[k] for sample in batch] for k in keys}
+
+    # Now process the things that need special handling
+    bags = batched["patches"]
+    patch_classes = batched["patch_class"]
+    patch_classes_cyst = batched["patch_class_cyst"]  # careful — you had typo before
+    patch_centers = batched["patch_centers"]
+
     concat_bag = torch.cat(bags, dim=0)
-    concat_patch_class = torch.cat(patch_class, dim=0)
+    concat_patch_class = torch.cat(patch_classes, dim=0)
+    concat_patch_class_cyst = torch.cat(patch_classes_cyst, dim=0)
     concat_patch_centers = torch.cat(patch_centers, dim=0)
 
-    t2 = time.time()
+    # Bag indices (very useful for MIL / instance → bag mapping)
     bag_idx = torch.cat([
-        torch.full((len(bag),), i, dtype=torch.long)
+        torch.full((len(bag),), i, dtype=torch.long, device=concat_bag.device)
         for i, bag in enumerate(bags)
     ])
 
-    # print(f"unzip: {t1-t0:.3f}, cat: {t2-t1:.3f}, idx: {time.time()-t2:.3f}")
-    return concat_bag, bag_idx, torch.stack(labels), concat_patch_class, concat_patch_centers, paths
+    # Stacked scalar / per-bag labels
+    labels = torch.stack(batched["label"])
+    cyst_labels = torch.stack(batched["cyst_label"])
+
+    # Paths usually stay as tuple/list of strings
+    paths = batched["path"]  # list[str]
+
+    # You can return a big dict, or keep your old tuple style
+    return {
+        "bag": concat_bag,
+        "bag_idx": bag_idx,
+        "label": labels,
+        "cyst_label": cyst_labels,
+        "patch_class": concat_patch_class,
+        "patch_class_cyst": concat_patch_class_cyst,
+        "patch_centers": concat_patch_centers,
+        "paths": paths,
+        # optionally also return other fields that didn't need concat:
+        # "original": torch.stack(batched["original"]),  # if all same size
+        # "mask_patches": ... whatever you need
+    }
+
+
+import torch.nn.functional as F
+
+
+def var_collate_fn_slices(batch):
+    data, labels, slice_class, paths = zip(*batch)
+
+    max_h = max(scan.shape[2] for scan in data)
+    max_w = max(scan.shape[3] for scan in data)
+
+    padded_volumes = []
+
+    for scan in data:
+        z, c, h, w = scan.shape
+
+        pad_h = max_h - h
+        pad_w = max_w - w
+
+        # Pad order: channels, depth, h, w
+        padding = (0, pad_w, 0, pad_h, 0, 0, 0, 0)
+
+        scan_padded = F.pad(scan, padding, value=0)
+        padded_volumes.append(scan_padded)
+
+    concat_data = torch.cat(padded_volumes, dim=0)
+    concat_slice_class = torch.cat(slice_class, dim=0)
+
+    bag_idx = torch.cat([
+        torch.full((scan.shape[0],), i, dtype=torch.long)
+        for i, scan in enumerate(padded_volumes)
+    ])
+
+    return concat_data, bag_idx, torch.stack(labels), concat_slice_class, paths
 
 
 def prepare_dataloader(cfg: DictConfig):
@@ -128,10 +201,14 @@ def prepare_dataloader(cfg: DictConfig):
             sampler_test = DistributedSampler(test_dataset, num_replicas=int(torch.cuda.device_count()),
                                               rank=int(os.environ["LOCAL_RANK"]),
                                               shuffle=True)
-        train_loader = data_utils.DataLoader(train_dataset, collate_fn=var_collate_fn, batch_size=cfg.data.batch_size,
+        train_loader = data_utils.DataLoader(train_dataset,
+                                             collate_fn=var_collate_fn if cfg.data.patchify else var_collate_fn_slices,
+                                             batch_size=cfg.data.batch_size,
                                              sampler=sampler,
                                              **loader_kwargs)
-        test_loader = data_utils.DataLoader(test_dataset, collate_fn=var_collate_fn, batch_size=cfg.data.batch_size,
+        test_loader = data_utils.DataLoader(test_dataset,
+                                            collate_fn=var_collate_fn if cfg.data.patchify else var_collate_fn_slices,
+                                            batch_size=cfg.data.batch_size,
                                             shuffle=False,
                                             sampler=sampler_test if cfg.training.multi_gpu == True else None,
                                             **loader_kwargs)
@@ -170,6 +247,7 @@ def prepare_dataloader(cfg: DictConfig):
     else:
         print("Wrong type specified")
     return train_loader, test_loader
+
 
 # random comment
 def pick_model(cfg: DictConfig):
@@ -233,7 +311,7 @@ def pick_model(cfg: DictConfig):
     elif cfg.model.name == 'resnetKNN':
         model = ResnetTwoHeadsKNN(instnorm=cfg.model.inst_norm, resnet_type="34")
     elif cfg.model.name == 'focus':
-        model = FocusmilSingleBranch()
+        model = FocusmilSingleBranch(cysts=cfg.model.cysts)
     return model
 
 
@@ -267,11 +345,21 @@ def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch, adv_optimizer=None, 
         loss_function = DepthLossSamplePatches().cuda()
         trainer = Trainer2DPatchDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                                       steps_in_epoch=steps_in_epoch)
+
+
     elif cfg.model.name == "focus":
+        print("using focusmil")
         loss_function = torch.nn.BCEWithLogitsLoss(reduction='mean').cuda()
-        trainer = FocusTrainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
-                               steps_in_epoch=steps_in_epoch, warmup_steps=warmup_steps)
+
+        if cfg.data.patchify:
+            trainer = FocusTrainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                                   steps_in_epoch=steps_in_epoch, warmup_steps=warmup_steps)
+        else:
+            trainer = SimpleTrainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                                    steps_in_epoch=steps_in_epoch)
+
     else:
+        print("using regular trainer")
         loss_function = torch.nn.BCEWithLogitsLoss().cuda()
         trainer = Trainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                           steps_in_epoch=steps_in_epoch, warmup_steps=warmup_steps)

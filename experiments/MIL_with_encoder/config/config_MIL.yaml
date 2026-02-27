@@ -2,7 +2,7 @@ hydra:
   run:
     dir: results/${experiment}/${hydra.job.name}/${model.name}/${data.dataloader}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-experiment: MIL
+experiment: depth
 
 training:
   epochs: 90
@@ -14,7 +14,7 @@ training:
 
 model:
   classes: 1
-  name: 'focus'
+  name: 'depth_patches2D'
   model_type: '2D'
   pretrained_imagenet: True
   neighbour_range: 0
@@ -22,21 +22,19 @@ model:
   inst_norm: True
   ghostnorm: False
   pretrained: True
-  relevancy_head: False
-  progressive_sigmoid_scaling: True
-  depth: False
+  depth: True
   classification: True
   frozen_backbone: False
   dann: False
   cysts: False
 
 data:
-  batch_size: 5
+  batch_size: 1
   take_every_nth_slice: 3
   data_augmentations: True
   plane: axial
   dataloader: kidney_real
-  crop_size: 302
+  crop_size: 90
   as_rgb: True
   roll_slices: True
   TUH_only: False
@@ -44,11 +42,11 @@ data:
   compass_filter: False
   important_slices_only: False
   no_lungs: False
-  patchify: True
-  nr_of_patches: 64
+  patchify: False
+  nr_of_patches: 300
   slice_level_supervision: 0
   random_experiment: False
-  spheres: True
+  spheres: False
   sample: uniform
 
-checkpoint: /users/arivajoo/results/MIL/train/focus/kidney_real/2026-02-16/13-55-24/checkpoints
+#checkpoint: /users/arivajoo/results/MIL/train/focus/kidney_real/2026-02-17/17-52-46/checkpoints

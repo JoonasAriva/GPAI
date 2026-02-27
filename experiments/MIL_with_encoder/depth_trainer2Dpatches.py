@@ -205,8 +205,8 @@ class Trainer2DPatchDepth:
 
         time_data = time.time()
 
-        # patches, y, (case_id, new_spacings, path, nth_slice), filtered_indices, num_patches, patch_centers
-        for data, bag_label, meta, filtered_indices, num_patches, patch_centers in tepoch:
+        # data, bag_label, meta, filtered_indices, num_patches, patch_centers
+        for data_dict in tepoch:
 
             data_time = time.time() - time_data
             data_times.append(data_time)
@@ -215,7 +215,7 @@ class Trainer2DPatchDepth:
             step += 1
             gc.collect()
 
-            data = torch.squeeze(data, dim=0)
+            data = torch.squeeze(data_dict["bag"], dim=0)
 
             if self.check:
                 print("data shape: ", data.shape, flush=True)
@@ -237,7 +237,7 @@ class Trainer2DPatchDepth:
 
                 time_loss = time.time()
 
-                (dloss, hloss, wloss), norm_loss = self.loss_function(features, patch_centers)
+                (dloss, hloss, wloss), norm_loss = self.loss_function(features, data_dict["patch_centers"])
 
                 loss_time = time.time() - time_loss
                 loss_times.append(loss_time)

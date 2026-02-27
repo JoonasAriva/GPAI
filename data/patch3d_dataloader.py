@@ -300,8 +300,19 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
 
             if tumor_options is not None:
                 if len(tumor_options) > 0:
-                    tumor_idx = np.random.randint(len(tumor_options), size=1, dtype=int)
-                    tumor_coord = tumor_options[tumor_idx]
+                    tumor_idx = np.random.randint(len(tumor_options), size=50, dtype=int)
+                    tumor_coords = tumor_options[tumor_idx]
+
+                    possible_tumor_coords = []
+                    for coord in tumor_coords:
+                        d, h, w = coord
+                        if d > D - depth_buffer or h > H - edge_buffer or w > W - edge_buffer:
+                            continue
+                        if d < depth_buffer or h < edge_buffer or w < edge_buffer:
+                            continue
+                        possible_tumor_coords.append([coord])
+                    tumor_coord = possible_tumor_coords[0]
+
                     coordinates = np.concatenate((tumor_coord, coordinates))
 
             for coord in coordinates:
@@ -441,6 +452,9 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
             tumor_foreground = (kidney_mask.as_tensor() == 2).to(torch.bool)  # already boolean
             options = torch.nonzero(foreground, as_tuple=False)  # shape (M,3)
             tumor_options = torch.nonzero(tumor_foreground, as_tuple=False)
+        else:
+            options = None
+            tumor_options = None
 
         patch_centers, patch_size = self.sample_patch_coordinates(x, sphere_options=options,
                                                                   tumor_options=tumor_options)
@@ -464,8 +478,15 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         keep_mask = (patches > 0.05).float().mean(dim=threshold_dims) > self.foreground_threshold
         patches = patches[keep_mask]
         mask_patches = torch.squeeze(mask_patches[keep_mask][:, 0])
+
         patch_class = ((2.5 > mask_patches) & (mask_patches > 1.5)).sum(axis=(1, 2))
         patch_class = patch_class > 0
+        patch_class_cyst = (2.5 < mask_patches).sum(axis=(1, 2))
+        patch_class_cyst = patch_class_cyst > 0
+        if patch_class_cyst.any():
+            y_cyst = torch.Tensor([True])
+        else:
+            y_cyst = torch.Tensor([False])
         # try:
         patch_centers = patch_centers[keep_mask]
         # except:
@@ -490,7 +511,19 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         #     f"p2: {t42 - t41:.3f}, "
         #     f"p3: {t5 - t42:.3f}, "
         # )
-        return patches, y, patch_class, patch_centers, x, path
+        return {
+            "patches": patches,  # torch.Tensor [n_patches, C, H, W]
+            "label": y,
+            "cyst_label": y_cyst,
+            "patch_class": patch_class,  # [n_patches]
+            "patch_class_cyst": patch_class_cyst,
+            "patch_centers": patch_centers,
+            "original": x,  # full slice / original image if you need it
+            "path": path,  # str or Path
+            "mask_patches": mask_patches,  # if used downstream
+        }
+        #return patches, y, y_cyst, patch_class, patch_class_cyst, patch_centers, x, path, mask_patches
+        # TODO: make it as dictionary?
         # return patches, y, (
         # case_id, new_spacings, path, x, patch_class, num_patches), patch_centers
 

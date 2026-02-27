@@ -5,7 +5,7 @@ from monai.networks.nets import resnet
 
 from torchvision.models import resnet18, ResNet18_Weights, resnet34, ResNet34_Weights, resnet, resnet50, \
     ResNet50_Weights
-from monai.networks.nets import resnet18, resnet34, resnet50
+#from monai.networks.nets import resnet18, resnet34, resnet50
 from gradient_reversal import GradientReversal
 from model_zoo import MyGroupNorm, AttentionHeadV3
 
@@ -140,18 +140,14 @@ class TransformerBlock(nn.Module):
 
 
 class ResNetDepth2dPatches(nn.Module):
-    def __init__(self, use_transformer_layers=False):
+    def __init__(self):
         super().__init__()
-        self.use_transformer_layers = use_transformer_layers
-        print("Using transformer layers: ", self.use_transformer_layers)
 
-        if self.use_transformer_layers:
-            self.transformer = TransformerBlock(dim=512, n_heads=8, mlp_ratio=1)
 
-        self.model = resnet.ResNet(resnet.Bottleneck, [3, 4, 6, 3], norm_layer=MyGroupNorm)
-        sd = resnet50(weights=ResNet50_Weights.DEFAULT).state_dict()
+        self.model = resnet.ResNet(resnet.Bottleneck, [2,2,2,2], norm_layer=MyGroupNorm)
+        sd = resnet18(weights=ResNet18_Weights.DEFAULT).state_dict()
         self.model.load_state_dict(sd, strict=False)
-        print("using resnet50!")
+        print("using resnet18!")
         num_features = self.model.fc.in_features
 
         self.cls_head = nn.Linear(num_features, 3)

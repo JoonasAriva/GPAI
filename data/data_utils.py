@@ -202,9 +202,20 @@ def normalize_scan(x, single_channel=False, model_type="2D", remove_bones=False)
         return norm_x
 
 
+# def normalize_scan_new(x):
+#     clipped_x = np.clip(x, -150, 250)  # soft tissue window
+#     norm_x = (clipped_x - np.min(clipped_x)) / (np.max(clipped_x) - np.min(clipped_x))
+#
+#     return norm_x
+
 def normalize_scan_new(x):
-    clipped_x = np.clip(x, -150, 250)  # soft tissue window
-    norm_x = (clipped_x - np.min(clipped_x)) / (np.max(clipped_x) - np.min(clipped_x))
+    # x is expected to be a torch.Tensor
+    clipped_x = torch.clamp(x, min=-150, max=250)  # soft tissue window
+
+    min_val = torch.min(clipped_x)
+    max_val = torch.max(clipped_x)
+
+    norm_x = (clipped_x - min_val) / (max_val - min_val + 1e-8)  # avoid division by zero
 
     return norm_x
 

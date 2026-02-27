@@ -7,13 +7,14 @@ from datetime import timedelta
 from pathlib import Path
 
 import hydra
+import math
 import numpy as np
 import torch
 import wandb
 from omegaconf import OmegaConf, DictConfig
 from torch.distributed import init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
-import math
+
 from multi_gpu_utils import print_multi_gpu, log_multi_gpu, reduce_results_dict
 
 # from torchinfo import summary
@@ -21,7 +22,7 @@ from multi_gpu_utils import print_multi_gpu, log_multi_gpu, reduce_results_dict
 sys.path.append('/gpfs/space/home/joonas97/GPAI/')
 sys.path.append('/users/arivajoo/GPAI')
 
-from train_utils2 import prepare_dataloader, pick_model, pick_trainer, prepare_optimizer
+from train_utils import prepare_dataloader, pick_model, pick_trainer, prepare_optimizer
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 # Training settings
@@ -33,6 +34,7 @@ np.seterr(divide='ignore', invalid='ignore')
 os.environ["WANDB__SERVICE_WAIT"] = "300"
 
 torch.backends.cudnn.benchmark = True
+
 
 @hydra.main(config_path="config", config_name="config_MIL", version_base='1.1')
 def main(cfg: DictConfig):
@@ -60,7 +62,7 @@ def main(cfg: DictConfig):
     train_loader, test_loader = prepare_dataloader(cfg)
 
     # steps_in_epoch = 480  # with pärnu and kirc and kits its 1250, if just TUH, its 480
-    steps_in_epoch = 577*2 # with extra data
+    steps_in_epoch = 577 * 2  # with extra data
     steps_in_epoch = (steps_in_epoch // n_gpus) // cfg.data.batch_size
     if cfg.data.dataloader == 'kidney_pasted':
         steps_in_epoch = 478 // n_gpus
@@ -89,13 +91,15 @@ def main(cfg: DictConfig):
         #     '/users/arivajoo/results/depth/train/resnetdepth/kidney_real/2025-07-14/11-17-49/checkpoints/best_model.pth',
         #     map_location='cuda:0')
         if cfg.model.model_type == '2D':
-            sd = torch.load(
-                '/users/arivajoo/results/patches2D_depth/train/depth_patches2D/kidney_real/2025-11-14/11-18-30/checkpoints/best_model.pth',
-                map_location='cuda:0')
+
+            pth = '/users/arivajoo/results/patches2D_depth/train/depth_patches2D/kidney_real/2025-09-17/14-50-05/checkpoints/best_model.pth'  # resnet34?
+            # pth = '/users/arivajoo/results/patches2D_depth/train/depth_patches2D/kidney_real/2025-11-14/11-18-30/checkpoints/best_model.pth'  # resnet50
+            sd = torch.load(pth, map_location='cuda:0', weights_only=True)  # this resnet50
+
         elif cfg.model.model_type == '3D':
             sd = torch.load(
                 '/users/arivajoo/results/patches3D_depth/train/depth_patches3D/kidney_real/2025-11-13/15-32-42/checkpoints/best_model.pth',
-                map_location='cuda:0')
+                map_location='cuda:0', weights_only=True)
         new_sd = {key.replace("module.", ""): value for key, value in sd.items()}
         missing, unexpected = model.load_state_dict(state_dict=new_sd, strict=False)
 
@@ -165,7 +169,8 @@ def main(cfg: DictConfig):
                            warmup_steps=warmup_steps)
 
     if not cfg.check and local_rank == 0:
-        experiment = wandb.init(project=proj_name, anonymous='must',settings=wandb.Settings(init_timeout=120))
+        experiment = wandb.init(project=proj_name, anonymous='must',
+                                settings=wandb.Settings(init_timeout=120))
         if not resume_run:
             experiment.config.update(
                 dict(epochs=cfg.training.epochs,
@@ -196,7 +201,7 @@ def main(cfg: DictConfig):
         if cfg.training.multi_gpu == True:
             epoch_results = reduce_results_dict(epoch_results)
 
-        test_f1 = epoch_results["f1_score_test"]
+        test_loss = epoch_results["loss_test"]
         # test_loss = epoch_results["loss_test"]
 
         # epoch_results = reduce_results_dict(epoch_results)
@@ -207,13 +212,13 @@ def main(cfg: DictConfig):
 
         Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
 
-        if test_f1 > best_f1:
+        if test_loss < best_loss:
             Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
             torch.save(model.state_dict(), str(dir_checkpoint / 'best_model.pth'))
-            log_multi_gpu(f"Best new model at epoch {epoch} (lowest test f1 score: {test_f1})!", local_rank)
+            log_multi_gpu(f"Best new model at epoch {epoch} (lowest test loss: {test_loss})!", local_rank)
 
             # best_loss = test_loss
-            best_f1 = test_f1
+            best_loss = test_loss
             best_epoch = epoch
             not_improved_epochs = 0
 
@@ -240,7 +245,7 @@ def main(cfg: DictConfig):
     if local_rank == 0:
         torch.save(model.state_dict(), str(dir_checkpoint / 'last_model.pth'))
         log_multi_gpu(f'Last checkpoint! Checkpoint {epoch} saved!', local_rank)
-        log_multi_gpu(f"Training completed, best_metric (f1-test): {best_f1:.4f} at epoch: {best_epoch}", local_rank)
+        log_multi_gpu(f"Training completed, best_metric (f1-test): {best_loss:.4f} at epoch: {best_epoch}", local_rank)
 
 
 if __name__ == "__main__":

@@ -1,20 +1,19 @@
-import random
 import sys
+import time
 from glob import glob
 
 import nibabel as nib
 import numpy as np
-#import raster_geometry as rg
+# import raster_geometry as rg
 import torch
-import torchio as tio
 from monai.transforms import *
-from monai.transforms import GridPatch
 from sklearn.model_selection import train_test_split
 
 sys.path.append('/gpfs/space/home/joonas97/GPAI/data/')
 sys.path.append('/users/arivajoo/GPAI/data')
-from data_utils import get_kidney_datasets, downsample_scan, normalize_scan, set_orientation_nib, \
-    get_pasted_small_dateset, normalize_scan_new, CompassFilter
+from data_utils import get_kidney_datasets, normalize_scan, set_orientation_nib, \
+    normalize_scan_new
+from patch3d_dataloader import threshold_f, resize_array
 
 
 def make_single_sphere_coords():
@@ -43,46 +42,27 @@ def make_sphere_coords(img_paths, labels, deterministic: bool = True):
 
 
 class KidneyDataloader(torch.utils.data.Dataset):
-    def __init__(self, only_every_nth_slice: int = 1, type: str = "train", downsample: bool = False,
-                 augmentations: callable = None, as_rgb: bool = False,
-                 sample_shifting: bool = False, plane: str = 'axial',
-                 center_crop: int = 120, roll_slices=False, model_type="2D", generate_spheres: bool = False,
-                 patchify: bool = False, patch_size: int = 128, no_lungs: bool = False,
-                 random_experiment: bool = False, pasted_experiment: bool = False, TUH_only: bool = False,
-                 compass_filtering: bool = False):
+    def __init__(self, type: str = "train", nth_slice: int = 3,
+                 augmentations: callable = None, plane: str = 'axial',
+                 center_crop: int = 170, no_lungs: bool = False,
+                 TUH_only: bool = False, TUH_extra_data: bool = False,
+                 compass_filtering: bool = False, model_type: str = '2D'
+                 , process_masks: bool = True, **kwargs):
         super().__init__()
-        self.roll_slices = roll_slices
-        self.as_rgb = as_rgb
         self.augmentations = augmentations
-        self.nth_slice = only_every_nth_slice
-        self.sample_shifting = sample_shifting
+        self.nth_slice = nth_slice
         self.plane = plane
-        self.downsample = downsample
-        self.model_type = model_type
-        self.generate_spheres = generate_spheres
         self.type = type
-        self.patchify = patchify
-        self.patch_size = patch_size
-        self.no_lungs = no_lungs
+        self.kind = model_type
+
         self.compass_filtering = compass_filtering
-        if compass_filtering:
-            self.COMPASS = CompassFilter(
-                dataframe_path_train='/users/arivajoo/GPAI/experiments/MIL_with_encoder/train_compass_scores.csv',
-                dataframe_path_test='/users/arivajoo/GPAI/experiments/MIL_with_encoder/test_compass_scores.csv')
-        if roll_slices:
-            center_crop = center_crop
-        self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))  # 500
-        # self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop - 2), method="end", constant_values=0)
-        self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop), method="end", constant_values=0)
-        self.resizer = Resize(spatial_size=512, size_mode="longest")
+
+        self.process_masks = process_masks
 
         print("PLANE: ", plane)
         print("CROP SIZE: ", center_crop)
 
-        if pasted_experiment and type == 'train':
-            control, tumor = get_pasted_small_dateset()
-        else:
-            control, tumor = get_kidney_datasets(type, no_lungs=no_lungs, TUH_only=TUH_only)
+        control, tumor = get_kidney_datasets(type, no_lungs=no_lungs, TUH_only=TUH_only, TUH_extra_data=TUH_extra_data)
 
         control_labels = [[False]] * len(control)
         self.controls = len(control)
@@ -93,24 +73,15 @@ class KidneyDataloader(torch.utils.data.Dataset):
         self.img_paths = control + tumor
         self.labels = control_labels + tumor_labels
 
-        if random_experiment:
-            random.shuffle(self.labels)
         print("Data length: ", len(self.img_paths), "Label length: ", len(self.labels))
         print(
             f"control: {len(control)}, tumor: {len(tumor)}")
 
         self.classes = ["control", "tumor"]
 
-        if self.generate_spheres:
-            self.synth_data = make_sphere_coords(self.img_paths, self.labels, deterministic=True)
-
-        self.patch_size = (1, 256, 256)
-        self.stride = (1, 256, 256)
-        self.grid_patch = GridPatch(
-            patch_size=self.patch_size,
-            stride=self.stride
-        )
-        self.foreground_threshold = 0.2
+        self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))
+        self.air_cropper = CropForeground(select_fn=threshold_f, margin=0, allow_smaller=False)
+        self.exact_path = None
 
     def pick_sample_frequency(self, nr_of_original_slices: int, nth_slice: int):
 
@@ -122,143 +93,315 @@ class KidneyDataloader(torch.utils.data.Dataset):
         else:
             return nth_slice
 
-    # def add_synth_tumor(self, scan, synth_coords, add_hole):
-    #     radius = synth_coords["circle_radius"]
-    #     x, y, z = synth_coords["xyz"]
-    #     sphere_mask = rg.sphere(scan.shape, radius, (x, y, z))
-    #     if add_hole:
-    #         cx, cy, cz = synth_coords["circ_in_circ_xyz"]
-    #         hole_radius = synth_coords["circ_in_circ_radius"]
-    #         hole_mask = rg.sphere(scan.shape, hole_radius, (cx, cy, cz))
-    #
-    #         sphere_mask = np.logical_xor(sphere_mask, hole_mask)
-    #
-    #     gaussian_noise_circle = torch.FloatTensor(np.random.randn(*scan.shape) * 20 + 210)
-    #     scan[sphere_mask] = gaussian_noise_circle[sphere_mask]
-    #     return scan
-
     def __len__(self):
         # a DataSet must know its size
         return len(self.img_paths)
 
     def __getitem__(self, index):
 
+        t0 = time.time()
         path = self.img_paths[index]
-
-        # find scan id from path
 
         match = path.split('/')[-1]
 
         case_id = match.replace("_0000.nii", ".nii")
         y = torch.Tensor(self.labels[index])
         x = nib.load(path)
-
+        t1 = time.time()
         x = set_orientation_nib(x)
         spacings = x.header.get_zooms()  # [2]-for only z, currently changed to take all spacings | h,w,d (order ?)
-        x = x.get_fdata()
+        x = torch.from_numpy(x.get_fdata().copy())
+        new_spacings = (0.84, 0.84, 2)
+        x = resize_array(x, spacings, new_spacings)
+        if self.process_masks:
+            seg_path = path.replace("_0000.nii.gz", ".nii.gz", ).replace("images", "labels")
+            t2 = time.time()
+            kidney_mask = set_orientation_nib(nib.load(seg_path))
+            kidney_mask = np.asanyarray(kidney_mask.dataobj, dtype=np.uint8)
+            kidney_mask = torch.from_numpy(kidney_mask.copy())
+            t3 = time.time()
+            kidney_mask = resize_array(kidney_mask, spacings, new_spacings, mask=True)
 
-        if self.downsample:
-            x = downsample_scan(x)
+        t4 = time.time()
+        x = torch.clamp(x, min=-1024)
+        preproc_path = f"/scratch/project_465001979/ct_data/kidney/preprocess_files/{case_id}_preproc.npz"
+        pre_proc = np.load(preproc_path)
+        mask = torch.as_tensor(pre_proc["mask"], dtype=torch.bool)
+        try:
+            x[~mask] = -1024
+        except IndexError:
+            print("preproc path:", preproc_path)
+            print("mask:", mask.shape)
+            print("x: ", x.shape)
+            print("case id: ", case_id)
 
-        if self.generate_spheres:
-            if self.type == "test":
-                synth_coords = self.synth_data[index]
-                #x = self.add_synth_tumor(x, synth_coords, add_hole=y)
-            elif self.type == "train":
-                synth_coords = make_single_sphere_coords()
-                y = torch.Tensor([np.random.choice(a=[False, True])])
-                #x = self.add_synth_tumor(x, synth_coords, add_hole=y)
+        t41 = time.time()
+
+        #x = self.air_cropper.crop_pad(x, pre_proc["bbox"][0], pre_proc["bbox"][1]).as_tensor()
+
+        # if self.process_masks:
+        #     kidney_mask = self.air_cropper.crop_pad(kidney_mask, pre_proc["bbox"][0], pre_proc["bbox"][1])
+
+        t42 = time.time()
 
         nr_of_original_slices = x.shape[-1]
-
         nth_slice = self.pick_sample_frequency(nr_of_original_slices, self.nth_slice)
-
         x = x[:, :, ::nth_slice]  # sample slices
-        x = np.expand_dims(x, 0)  # needed for cropper
+        kidney_mask = kidney_mask[:, :, ::nth_slice]
+        x = torch.unsqueeze(x, 0)  # needed for cropper
+        kidney_mask = torch.unsqueeze(kidney_mask, 0)
         x = self.center_cropper(x).as_tensor()
-        x = np.squeeze(x)
-        w, h, d = x.shape
+        kidney_mask = self.center_cropper(kidney_mask).as_tensor()
+        x = torch.squeeze(x)
+        kidney_mask = torch.squeeze(kidney_mask)
 
-        if self.compass_filtering:
-            original_len = x.shape[-1]
-            low_index, high_index = self.COMPASS.compass_filter_indexes(case_id,
-                                                                        train=True if self.type == 'train' else False)
-            x = x[:, :, low_index:high_index]
-            after_len = x.shape[-1]
-            filter_effect = original_len - after_len
-        else:
-            filter_effect = 0
-        x = np.clip(x, -1024, None)
-        # x = remove_table_3d(x)
+        H, W, D = x.shape
+        C_out = 3
+        D_out = D - 2  # after cropping depth
 
-        if self.as_rgb:  # if we need 3 channel input
-            if self.roll_slices:
+        # preallocate output tensor
+        x_stack = torch.empty((C_out, H, W, D_out), dtype=x.dtype, device=x.device)
 
-                roll_forward = np.roll(x, 1, axis=(2))
-                # mirror the first slice
-                # roll_forward[:, :, 0] = roll_forward[:, :, 1]
-                roll_back = np.roll(x, -1, axis=(2))
-                # mirror the first slice
-                # roll_back[:, :, -1] = roll_back[:, :, -2]
-                x = np.stack((roll_back, x, roll_forward), axis=0)
-                x = x[:, :, :, 1:-1]
-            else:
-                x = np.concatenate((x, x, x), axis=0)
+        # fill channels efficiently
+        x_stack[0] = x[:, :, :-2]  # roll_back
+        x_stack[1] = x[:, :, 1:-1]  # center
+        x_stack[2] = x[:, :, 2:]  # roll_forward
 
-        if self.augmentations is not None:
+        x = x_stack
 
-            if self.roll_slices:
-                x = self.augmentations(x)
-            elif self.model_type == "3D":
-                x = self.augmentations(np.expand_dims(x, 0))
-            else:
-                for i in range(x.shape[2]):
-                    x[:, :, i] = self.augmentations(np.expand_dims(x[:, :, i], 0))
+        kidney_mask = kidney_mask[:, :, 1:-1]
 
-        if len(x.shape) == 3:  # might be case in 3d models
-            x = np.expand_dims(x, 0)
+        # transpose (D, C, H, W)
+        x = x.permute(3, 0, 1, 2)
+
         x = normalize_scan_new(x)
 
-        if w < 512 or h < 512:
-            if w >= h:
-                x = tio.Resize((512, int(512 * h / w), d))(x)
-            else:
-                x = tio.Resize((int(512 * w / h), 512, d))(x)
-        # x = x.as_tensor()
+        slice_class = ((2.5 > kidney_mask) & (kidney_mask > 1.5)).sum(axis=(0,1))
+        slice_class = slice_class > 0
 
-        if self.patchify:
-            x = np.transpose(x, (0, 3, 1, 2))
-            depth = x.shape[1]
-            print("Before patchify: ", x.shape)
-            patches = torch.squeeze(self.grid_patch(x))
-            print("After patchify: ", patches.shape)
-            if self.foreground_threshold > 0:
-                num_patches = patches.shape[0]
-                indices = torch.arange(num_patches)
-                not_background_patches = (patches > 0.05).float().mean(dim=(1, 2, 3))
+        if self.augmentations is not None:
+            x = self.augmentations(x)
 
-                keep_mask = not_background_patches > self.foreground_threshold
+        return x, y, slice_class, path
 
-                patches = patches[keep_mask]
 
-                filtered_indices = indices[keep_mask]
-
-                # Compute grid dims
-                grid_H = (x.shape[2] - self.patch_size[1]) // self.stride[1] + 1
-                grid_W = (x.shape[3] - self.patch_size[2]) // self.stride[2] + 1
-
-                return patches, y, (case_id, spacings, path, nth_slice), (
-                    grid_H, grid_W, depth), filtered_indices, num_patches
-
-        height_before_padding = x.shape[-1]
-        if not self.model_type == "3D":
-
-            x = self.padder_z(x).as_tensor()
-            return x, y, (case_id, nth_slice, spacings, height_before_padding, path, filter_effect)
-        else:
-            # x = self.padder_z(x).as_tensor()
-            x = torch.squeeze(x)
-            return x, y, (case_id, nth_slice, spacings, height_before_padding, path, filter_effect)
+# class KidneyDataloader(torch.utils.data.Dataset):
+#     def __init__(self, only_every_nth_slice: int = 1, type: str = "train", downsample: bool = False,
+#                  augmentations: callable = None, as_rgb: bool = False,
+#                  sample_shifting: bool = False, plane: str = 'axial',
+#                  center_crop: int = 120, roll_slices=False, model_type="2D", generate_spheres: bool = False,
+#                  patchify: bool = False, patch_size: int = 128, no_lungs: bool = False,
+#                  random_experiment: bool = False, pasted_experiment: bool = False, TUH_only: bool = False,
+#                  compass_filtering: bool = False):
+#         super().__init__()
+#         self.roll_slices = roll_slices
+#         self.as_rgb = as_rgb
+#         self.augmentations = augmentations
+#         self.nth_slice = only_every_nth_slice
+#         self.sample_shifting = sample_shifting
+#         self.plane = plane
+#         self.downsample = downsample
+#         self.model_type = model_type
+#         self.generate_spheres = generate_spheres
+#         self.type = type
+#         self.patchify = patchify
+#         self.patch_size = patch_size
+#         self.no_lungs = no_lungs
+#         self.compass_filtering = compass_filtering
+#         if compass_filtering:
+#             self.COMPASS = CompassFilter(
+#                 dataframe_path_train='/users/arivajoo/GPAI/experiments/MIL_with_encoder/train_compass_scores.csv',
+#                 dataframe_path_test='/users/arivajoo/GPAI/experiments/MIL_with_encoder/test_compass_scores.csv')
+#         if roll_slices:
+#             center_crop = center_crop
+#         self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))  # 500
+#         # self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop - 2), method="end", constant_values=0)
+#         self.padder_z = SpatialPad(spatial_size=(-1, -1, center_crop), method="end", constant_values=0)
+#         self.resizer = Resize(spatial_size=512, size_mode="longest")
+#
+#         print("PLANE: ", plane)
+#         print("CROP SIZE: ", center_crop)
+#
+#         if pasted_experiment and type == 'train':
+#             control, tumor = get_pasted_small_dateset()
+#         else:
+#             control, tumor = get_kidney_datasets(type, no_lungs=no_lungs, TUH_only=TUH_only)
+#
+#         control_labels = [[False]] * len(control)
+#         self.controls = len(control)
+#
+#         tumor_labels = [[True]] * len(tumor)
+#         self.cases = len(tumor)
+#
+#         self.img_paths = control + tumor
+#         self.labels = control_labels + tumor_labels
+#
+#         if random_experiment:
+#             random.shuffle(self.labels)
+#         print("Data length: ", len(self.img_paths), "Label length: ", len(self.labels))
+#         print(
+#             f"control: {len(control)}, tumor: {len(tumor)}")
+#
+#         self.classes = ["control", "tumor"]
+#
+#         if self.generate_spheres:
+#             self.synth_data = make_sphere_coords(self.img_paths, self.labels, deterministic=True)
+#
+#         self.patch_size = (1, 256, 256)
+#         self.stride = (1, 256, 256)
+#         self.grid_patch = GridPatch(
+#             patch_size=self.patch_size,
+#             stride=self.stride
+#         )
+#         self.foreground_threshold = 0.2
+#
+#     def pick_sample_frequency(self, nr_of_original_slices: int, nth_slice: int):
+#
+#         if nth_slice == 1:
+#             return nth_slice
+#
+#         if nr_of_original_slices / nth_slice < 50:
+#             return self.pick_sample_frequency(nr_of_original_slices, nth_slice - 1)
+#         else:
+#             return nth_slice
+#
+#     # def add_synth_tumor(self, scan, synth_coords, add_hole):
+#     #     radius = synth_coords["circle_radius"]
+#     #     x, y, z = synth_coords["xyz"]
+#     #     sphere_mask = rg.sphere(scan.shape, radius, (x, y, z))
+#     #     if add_hole:
+#     #         cx, cy, cz = synth_coords["circ_in_circ_xyz"]
+#     #         hole_radius = synth_coords["circ_in_circ_radius"]
+#     #         hole_mask = rg.sphere(scan.shape, hole_radius, (cx, cy, cz))
+#     #
+#     #         sphere_mask = np.logical_xor(sphere_mask, hole_mask)
+#     #
+#     #     gaussian_noise_circle = torch.FloatTensor(np.random.randn(*scan.shape) * 20 + 210)
+#     #     scan[sphere_mask] = gaussian_noise_circle[sphere_mask]
+#     #     return scan
+#
+#     def __len__(self):
+#         # a DataSet must know its size
+#         return len(self.img_paths)
+#
+#     def __getitem__(self, index):
+#
+#         path = self.img_paths[index]
+#
+#         # find scan id from path
+#
+#         match = path.split('/')[-1]
+#
+#         case_id = match.replace("_0000.nii", ".nii")
+#         y = torch.Tensor(self.labels[index])
+#         x = nib.load(path)
+#
+#         x = set_orientation_nib(x)
+#         spacings = x.header.get_zooms()  # [2]-for only z, currently changed to take all spacings | h,w,d (order ?)
+#         x = x.get_fdata()
+#
+#         if self.downsample:
+#             x = downsample_scan(x)
+#
+#         if self.generate_spheres:
+#             if self.type == "test":
+#                 synth_coords = self.synth_data[index]
+#                 # x = self.add_synth_tumor(x, synth_coords, add_hole=y)
+#             elif self.type == "train":
+#                 synth_coords = make_single_sphere_coords()
+#                 y = torch.Tensor([np.random.choice(a=[False, True])])
+#                 # x = self.add_synth_tumor(x, synth_coords, add_hole=y)
+#
+#         nr_of_original_slices = x.shape[-1]
+#
+#         nth_slice = self.pick_sample_frequency(nr_of_original_slices, self.nth_slice)
+#
+#         x = x[:, :, ::nth_slice]  # sample slices
+#         x = np.expand_dims(x, 0)  # needed for cropper
+#         x = self.center_cropper(x).as_tensor()
+#         x = np.squeeze(x)
+#         w, h, d = x.shape
+#
+#         if self.compass_filtering:
+#             original_len = x.shape[-1]
+#             low_index, high_index = self.COMPASS.compass_filter_indexes(case_id,
+#                                                                         train=True if self.type == 'train' else False)
+#             x = x[:, :, low_index:high_index]
+#             after_len = x.shape[-1]
+#             filter_effect = original_len - after_len
+#         else:
+#             filter_effect = 0
+#         x = np.clip(x, -1024, None)
+#         # x = remove_table_3d(x)
+#
+#         if self.as_rgb:  # if we need 3 channel input
+#             if self.roll_slices:
+#
+#                 roll_forward = np.roll(x, 1, axis=(2))
+#                 # mirror the first slice
+#                 # roll_forward[:, :, 0] = roll_forward[:, :, 1]
+#                 roll_back = np.roll(x, -1, axis=(2))
+#                 # mirror the first slice
+#                 # roll_back[:, :, -1] = roll_back[:, :, -2]
+#                 x = np.stack((roll_back, x, roll_forward), axis=0)
+#                 x = x[:, :, :, 1:-1]
+#             else:
+#                 x = np.concatenate((x, x, x), axis=0)
+#
+#         if self.augmentations is not None:
+#
+#             if self.roll_slices:
+#                 x = self.augmentations(x)
+#             elif self.model_type == "3D":
+#                 x = self.augmentations(np.expand_dims(x, 0))
+#             else:
+#                 for i in range(x.shape[2]):
+#                     x[:, :, i] = self.augmentations(np.expand_dims(x[:, :, i], 0))
+#
+#         if len(x.shape) == 3:  # might be case in 3d models
+#             x = np.expand_dims(x, 0)
+#         x = normalize_scan_new(x)
+#
+#         if w < 512 or h < 512:
+#             if w >= h:
+#                 x = tio.Resize((512, int(512 * h / w), d))(x)
+#             else:
+#                 x = tio.Resize((int(512 * w / h), 512, d))(x)
+#         # x = x.as_tensor()
+#
+#         if self.patchify:
+#             x = np.transpose(x, (0, 3, 1, 2))
+#             depth = x.shape[1]
+#             print("Before patchify: ", x.shape)
+#             patches = torch.squeeze(self.grid_patch(x))
+#             print("After patchify: ", patches.shape)
+#             if self.foreground_threshold > 0:
+#                 num_patches = patches.shape[0]
+#                 indices = torch.arange(num_patches)
+#                 not_background_patches = (patches > 0.05).float().mean(dim=(1, 2, 3))
+#
+#                 keep_mask = not_background_patches > self.foreground_threshold
+#
+#                 patches = patches[keep_mask]
+#
+#                 filtered_indices = indices[keep_mask]
+#
+#                 # Compute grid dims
+#                 grid_H = (x.shape[2] - self.patch_size[1]) // self.stride[1] + 1
+#                 grid_W = (x.shape[3] - self.patch_size[2]) // self.stride[2] + 1
+#
+#                 return patches, y, (case_id, spacings, path, nth_slice), (
+#                     grid_H, grid_W, depth), filtered_indices, num_patches
+#
+#         height_before_padding = x.shape[-1]
+#         if not self.model_type == "3D":
+#
+#             x = self.padder_z(x).as_tensor()
+#             return x, y, (case_id, nth_slice, spacings, height_before_padding, path, filter_effect)
+#         else:
+#             # x = self.padder_z(x).as_tensor()
+#             x = torch.squeeze(x)
+#             return x, y, (case_id, nth_slice, spacings, height_before_padding, path, filter_effect)
 
 
 class AbdomenAtlasLoader(torch.utils.data.Dataset):

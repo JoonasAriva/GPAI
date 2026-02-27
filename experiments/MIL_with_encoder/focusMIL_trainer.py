@@ -125,11 +125,12 @@ class FocusTrainer:
 
         time_data = time.time()
 
-        for data, bag_idx, bag_label, patch_class, patch_centers, path in tepoch:
+        for data, bag_idx, bag_label, cyst_bag_label, patch_class, cyst_patch_class, patch_centers, path in tepoch:
             # was just: data, bag_label, meta before 2d patch sampling
-            #bag_idx = torch.Tensor(np.array([1]))
+            # bag_idx = torch.Tensor(np.array([1]))
             if self.check:
                 print("data shape: ", data.shape, flush=True)
+                print("BAG IDX AND LABEL: ",bag_idx.shape, bag_label.shape, flush=True)
 
             data_time = time.time() - time_data
             data_times.append(data_time)
@@ -144,6 +145,7 @@ class FocusTrainer:
 
             data = data.cuda(non_blocking=True).to(dtype=torch.float16)
             bag_label = bag_label.cuda(non_blocking=True)
+            cyst_bag_label = cyst_bag_label.cuda(non_blocking=True)
             time_forward = time.time()
             with torch.amp.autocast(device_type='cuda'), torch.no_grad() if not train else nullcontext():
 
@@ -151,11 +153,13 @@ class FocusTrainer:
                 bag_label = bag_label.view(-1, 1).float()  # [B]->[B,1]
                 # Main classification loss
                 cls_loss = self.loss_function(out["scores"], bag_label)
+                cyst_cls_loss = self.loss_function(out["cyst_scores"], cyst_bag_label)
                 KL_loss = out["KL_loss"]
                 results["KL_loss"] += KL_loss.item()
                 total_loss = (
-                        1 * KL_loss
+                        0.001 * KL_loss
                         + 1 * cls_loss
+                        + 0.5 * cyst_cls_loss
                 )
 
                 forward_time = time.time() - time_forward
@@ -165,6 +169,7 @@ class FocusTrainer:
 
                 total_loss += cls_loss
                 results["class_loss"] += cls_loss.item()
+                results["cyst_cls_loss"] += cyst_cls_loss.item()
 
                 outputs.append(Y_hat.detach().cpu())
                 targets.append(bag_label.detach().cpu())
@@ -176,7 +181,6 @@ class FocusTrainer:
                 patch_outputs.append(logit_class.cpu())
                 patch_targets.append(patch_class)
 
-
             if train:
                 time_backprop = time.time()
                 scaler.scale(total_loss).backward()
@@ -187,7 +191,6 @@ class FocusTrainer:
                 scaler.update()
                 self.optimizer.zero_grad(set_to_none=True)
                 self.scheduler.step()
-
 
             results["loss"] += total_loss.item()
 
@@ -211,7 +214,6 @@ class FocusTrainer:
 
         f1 = 0
         if self.classification:
-
             outputs = np.concatenate(outputs)
             targets = np.concatenate(targets)
             patch_outputs = np.concatenate(patch_outputs)
@@ -223,7 +225,6 @@ class FocusTrainer:
             results["patch_f1"] = patch_f1
             results["f1_score"] = f1
 
-
         print_multi_gpu(
             f"data speed: {round(np.mean(data_times), 3)}, forward speed ,{round(np.mean(forward_times), 3)},backprop speed: , {round(np.mean(backprop_times), 3)}",
             local_rank)
@@ -232,6 +233,7 @@ class FocusTrainer:
             '{}: loss: {:.4f}, enc error: {:.4f}, f1 macro score: {:.4f} '.format(
                 "Train" if train else "Validation", results["loss"], results["error"], f1), local_rank)
         print_multi_gpu(
-            f"Main classification loss: {round(results['class_loss'], 3)}", local_rank)
+            f"Main classification loss: {round(results['class_loss'], 3)} and cyst loss: {round(results['cyst_cls_loss'], 3)}",
+            local_rank)
 
         return results

@@ -1,7 +1,7 @@
 import torch
 import torch.distributions as dist
 import torch.nn as nn
-from torchvision.models import resnet50, ResNet50_Weights, resnet
+from torchvision.models import resnet, resnet18, ResNet18_Weights
 
 from model_zoo import MyGroupNorm
 
@@ -13,9 +13,9 @@ class VariationalEncoder(nn.Module):
     def __init__(self, latent_dim=128, in_dim=512):
         super(VariationalEncoder, self).__init__()
         self.fc_initial = nn.Sequential(
-            nn.Linear(in_dim, 512),
+            nn.Linear(in_dim, 256),
             nn.ReLU(),
-            nn.Linear(512, 256),
+            nn.Linear(256, 256),
             nn.ReLU(),
         )
         self.mean = nn.Linear(256, latent_dim)
@@ -28,10 +28,16 @@ class VariationalEncoder(nn.Module):
         return mu, logvar
 
 
-class AuxiliaryYFixed(nn.Module):
-    def __init__(self, instance_latent_dim=128):
-        super(AuxiliaryYFixed, self).__init__()
-        self.fc_ins = nn.Linear(instance_latent_dim, 1)
+class CLShead(nn.Module):
+    def __init__(self, instance_latent_dim=128, cysts=False):
+        super(CLShead, self).__init__()
+        self.cysts = cysts
+        if cysts == True:
+            out_dim = 2
+        else:
+            out_dim = 1
+
+        self.fc_ins = nn.Linear(instance_latent_dim, out_dim)
 
     def forward(self, z_ins, bag_idx):
         """
@@ -44,8 +50,8 @@ class AuxiliaryYFixed(nn.Module):
         bags = bag_idx.unique()
         device = z_ins.device
         B = bags.shape[0]
-
         M = torch.zeros((B, 1), device=device)
+        C = torch.zeros((B, 1), device=device)
 
         for i, bag_id in enumerate(bags):
 
@@ -53,32 +59,42 @@ class AuxiliaryYFixed(nn.Module):
 
             if idxs_bag.numel() > 0:
 
-                M[i, :] = loc_ins_logits[idxs_bag].max()
+                M[i, :] = loc_ins_logits[idxs_bag, 0].max()
+
+                if self.cysts == True:
+                    C[i, :] = loc_ins_logits[idxs_bag, 1].max()
 
             else:
                 M[i, :] = 0.0
+                if self.cysts == True:
+                    C[i, :] = 0.0
 
-        return M, loc_ins_logits
+        if self.cysts == False:
+            C = None
+
+        return M, C, loc_ins_logits[:, 0]
 
 
-class FocusmilSingleBranch(nn.Module):
+class FocusMIL(nn.Module):
     """
     Simplified: only single-branch, without diff_loss or third_loss.
     """
 
-    def __init__(self, instance_latent_dim=128):
-        super(FocusmilSingleBranch, self).__init__()
+    def __init__(self, instance_latent_dim=128, cysts=False):
+        super(FocusMIL, self).__init__()
 
-        self.model = resnet.ResNet(resnet.Bottleneck, [3, 4, 6, 3], norm_layer=MyGroupNorm)
-        sd = resnet50(weights=ResNet50_Weights.DEFAULT).state_dict()
-
-        self.model.load_state_dict(sd, strict=False)
-
+        self.backbone = resnet.ResNet(resnet.BasicBlock, [2, 2, 2, 2], norm_layer=MyGroupNorm)
+        sd = resnet18(weights=ResNet18_Weights.DEFAULT).state_dict()
+        self.backbone.load_state_dict(sd, strict=False)
+        self.cysts = cysts
         self.num_features = self.model.fc.in_features
         self.model.fc = nn.Identity()
 
         self.encoder = VariationalEncoder(latent_dim=instance_latent_dim, in_dim=self.num_features)
-        self.aux_y = AuxiliaryYFixed(instance_latent_dim)
+        self.cls = CLShead(instance_latent_dim, cysts=cysts)
+        # self.cls_cyst = CLShead(instance_latent_dim)
+        if self.cysts == True:
+            print("using cysts too!")
 
         # Main classification loss
         # You may use BCEWithLogitsLoss or BCELoss, depending on your need
@@ -93,7 +109,7 @@ class FocusmilSingleBranch(nn.Module):
         """
 
         # VAE encoder
-        feats = self.model(bag)
+        feats = self.backbone(bag)
         instance_mu, instance_logvar = self.encoder(feats)
         instance_std = (instance_logvar * 0.5).exp_()
 
@@ -104,7 +120,10 @@ class FocusmilSingleBranch(nn.Module):
             z_ins = instance_mu
 
         # Single-branch bag score
-        bag_score, instance_scores = self.aux_y(z_ins, bag_idx)
+
+        bag_score, cyst_bag_score, instance_scores = self.cls(z_ins, bag_idx)
+
+        # cyst_bag_score, _ = self.cls_cyst(z_ins, bag_idx)
 
         # KL
         KL_loss = 0.5 * (
@@ -112,45 +131,15 @@ class FocusmilSingleBranch(nn.Module):
                 - 2 * torch.log(instance_std + 1e-8) - 1
         ).mean()
         Y_hat = torch.ge(torch.sigmoid(bag_score), 0.5).float()
+        if self.cysts:
+            cyst_Y_hat = torch.ge(torch.sigmoid(cyst_bag_score), 0.5).float()
+        else:
+            cyst_Y_hat = None
         return {
             'scores': bag_score,
             'instance_scores': instance_scores,
             'KL_loss': KL_loss,
-            'predictions': Y_hat
+            'predictions': Y_hat,
+            'cyst_scores': cyst_bag_score,
+            'cyst_Y_hat': cyst_Y_hat,
         }
-
-    @torch.no_grad()
-    def forward_no_sampling(self, bag, bag_idx):
-        """
-        Testing/inference forward:
-         - No random sampling (directly use mu)
-         - Obtain bag-level score M and instance-level score loc_ins
-        """
-        instance_mu, instance_logvar = self.encoder(bag)
-        instance_std = (instance_logvar * 0.5).exp_()
-        # no sampling
-        z_ins = instance_mu
-        M, loc_ins = self.aux_y(z_ins, bag_idx)
-
-        KL_loss = 0.5 * (
-                instance_mu.pow(2) + instance_std.pow(2)
-                - 2 * torch.log(instance_std + 1e-8) - 1
-        ).mean()
-
-        return M, loc_ins, KL_loss
-
-    @torch.no_grad()
-    def predict_instance_score(self, bag, bag_idx):
-        """
-        Return instance-level scores [N]
-        """
-        M, loc_ins, KL_loss = self.forward_no_sampling(bag, bag_idx)
-        return loc_ins.squeeze(-1)
-
-    @torch.no_grad()
-    def predict_bag_score(self, bag, bag_idx):
-        """
-        Return bag-level scores [B]
-        """
-        M, loc_ins, KL_loss = self.forward_no_sampling(bag, bag_idx)
-        return M.squeeze(-1)

@@ -900,7 +900,7 @@ class TransMIL(nn.Module):
 
 class ResNetDepth(nn.Module):
 
-    def __init__(self, instnorm=False, ghostnorm: bool = False, resnet_type="34"):
+    def __init__(self, instnorm=False, ghostnorm: bool = False, resnet_type="18"):
         super().__init__()
         print("Resnet type: {}".format(resnet_type))
         self.instnorm = instnorm
