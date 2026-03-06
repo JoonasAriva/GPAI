@@ -22,8 +22,9 @@ from data.patch3d_dataloader import KidneyDataloader3D
 from depth_trainer import TrainerDepth, DepthLossV2, CompassLoss
 from depth_trainer2Dpatches import Trainer2DPatchDepth, DepthLossSamplePatches
 from depth_trainer3D import Trainer3DDepth, DepthLoss3D
-from focusMIL import FocusmilSingleBranch
+from focusMIL import FocusMIL, FocusCompass, FocusCompassFixed
 from focusMIL_trainer import FocusTrainer
+from focuscontrast_trainer import FocusContrastTrainer
 from model_zoo import ResNetAttentionV3, ResNetSelfAttention, ResNetTransformerPosEnc, ResNetTransformerPosEmbed, \
     ResNetTransformer, TwoStageNet, TwoStageNetSimple, TransMIL, ResNetDepth, TransDepth, CompassModel, \
     CompassModelV2, DepthTumor, OrganModel, ResNetTwoHeads, ResnetTwoHeadsKNN
@@ -58,7 +59,7 @@ from trainer_simple import SimpleTrainer
 
 
 def var_collate_fn(batch):  # batch = list[dict]
-
+    data_dict = dict()
     # Extract all dicts
     # We assume every dict has the same keys (enforced by Dataset)
     keys = batch[0].keys()
@@ -68,13 +69,9 @@ def var_collate_fn(batch):  # batch = list[dict]
 
     # Now process the things that need special handling
     bags = batched["patches"]
-    patch_classes = batched["patch_class"]
-    patch_classes_cyst = batched["patch_class_cyst"]  # careful — you had typo before
-    patch_centers = batched["patch_centers"]
 
+    patch_centers = batched["patch_centers"]
     concat_bag = torch.cat(bags, dim=0)
-    concat_patch_class = torch.cat(patch_classes, dim=0)
-    concat_patch_class_cyst = torch.cat(patch_classes_cyst, dim=0)
     concat_patch_centers = torch.cat(patch_centers, dim=0)
 
     # Bag indices (very useful for MIL / instance → bag mapping)
@@ -83,27 +80,34 @@ def var_collate_fn(batch):  # batch = list[dict]
         for i, bag in enumerate(bags)
     ])
 
-    # Stacked scalar / per-bag labels
     labels = torch.stack(batched["label"])
-    cyst_labels = torch.stack(batched["cyst_label"])
 
-    # Paths usually stay as tuple/list of strings
-    paths = batched["path"]  # list[str]
 
-    # You can return a big dict, or keep your old tuple style
-    return {
+    paths = batched["path"]
+
+    data_dict = {
         "bag": concat_bag,
         "bag_idx": bag_idx,
         "label": labels,
-        "cyst_label": cyst_labels,
-        "patch_class": concat_patch_class,
-        "patch_class_cyst": concat_patch_class_cyst,
         "patch_centers": concat_patch_centers,
-        "paths": paths,
-        # optionally also return other fields that didn't need concat:
-        # "original": torch.stack(batched["original"]),  # if all same size
-        # "mask_patches": ... whatever you need
-    }
+        "paths": paths}
+
+    if "patch_class" in batched.keys():
+        patch_classes = batched["patch_class"]
+        patch_classes_cyst = batched["patch_class_cyst"]
+        concat_patch_class = torch.cat(patch_classes, dim=0)
+        concat_patch_class_cyst = torch.cat(patch_classes_cyst, dim=0)
+        cyst_labels = torch.stack(batched["cyst_label"])
+
+        mask_dict = {"cyst_label": cyst_labels,
+                     "patch_class": concat_patch_class,
+                     "patch_class_cyst": concat_patch_class_cyst}
+        data_dict.update(mask_dict)
+
+    return data_dict
+    # optionally also return other fields that didn't need concat:
+    # "original": torch.stack(batched["original"]),  # if all same size
+    # "mask_patches": ... whatever you need
 
 
 import torch.nn.functional as F
@@ -311,7 +315,11 @@ def pick_model(cfg: DictConfig):
     elif cfg.model.name == 'resnetKNN':
         model = ResnetTwoHeadsKNN(instnorm=cfg.model.inst_norm, resnet_type="34")
     elif cfg.model.name == 'focus':
-        model = FocusmilSingleBranch(cysts=cfg.model.cysts)
+        model = FocusMIL()
+    elif cfg.model.name == 'focuscompass':
+        model = FocusCompass()
+    elif cfg.model.name == 'focuscompassfixed':
+        model = FocusCompassFixed()
     return model
 
 
@@ -357,6 +365,13 @@ def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch, adv_optimizer=None, 
         else:
             trainer = SimpleTrainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
                                     steps_in_epoch=steps_in_epoch)
+    elif cfg.model.name == "focuscompass" or cfg.model.name == "focuscompassfixed":
+        print("using focusmil + contrast!!!!")
+        loss_function = torch.nn.BCEWithLogitsLoss(reduction='mean').cuda()
+
+        trainer = FocusContrastTrainer(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function, cfg=cfg,
+                                       steps_in_epoch=steps_in_epoch, warmup_steps=warmup_steps)
+
 
     else:
         print("using regular trainer")

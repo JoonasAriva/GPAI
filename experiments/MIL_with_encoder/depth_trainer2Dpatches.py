@@ -94,8 +94,15 @@ class DepthLossSamplePatches(nn.Module):
         # we go from N,3 --> N,N,3
         return matrix.reshape(-1, 1, 3) - matrix.float()
 
-    def forward(self, predictions, real_coordinates):
+    def forward(self, predictions, real_coordinates, patient_ids=None):
         # for 3d: inputs should be in the shape of (N,3)
+        unique_patients_nr = 1
+
+        if patient_ids is not None:
+
+            patient_mask = patient_ids.unsqueeze(1) == patient_ids.unsqueeze(0)
+            # get mask where patches are from the same patient
+            unique_patients_nr = len(np.unique(patient_ids))
 
         # scale real coordinates with respectable spacing values (in millimeters)
         voxel_spacing = torch.tensor([2.0, 0.84, 0.84])
@@ -114,12 +121,14 @@ class DepthLossSamplePatches(nn.Module):
         # THE DECOUPLED PART
         # produce errors for each dimension individually (z,y,x), dimensions are decoupled
         decoupled_error = pred_distance_matrix - true_distance
-
+        if patient_ids is not None:
+            decoupled_error[~patient_mask] = 0
         # sum errors together
         # divide with the size of the matrix to normalize
         # do it for all three dimensions separately
-        zyx_losses = [decoupled_error[:, :, i].abs().sum(dim=(0, 1)) / (len(decoupled_error) ** 2) for i in
-                      range(3)]  # this loss is tuple of size 3
+        zyx_losses = [
+            decoupled_error[:, :, i].abs().sum(dim=(0, 1)) / ((len(decoupled_error) / unique_patients_nr) ** 2) for i in
+            range(3)]  # this loss is tuple of size 3
 
         # THE COUPLED PART
         # produce errors for euclidian distance: distance = np.sqrt(x**2+y**2+z**2), dimensions are coupled
@@ -129,7 +138,10 @@ class DepthLossSamplePatches(nn.Module):
 
         coupled_error = pred_distance_norm - true_distance_norm
 
-        norm_loss = coupled_error.abs().sum() / (len(coupled_error) ** 2)
+        if patient_ids is not None:
+            coupled_error[~patient_mask] = 0
+
+        norm_loss = coupled_error.abs().sum() / ((len(coupled_error) / unique_patients_nr) ** 2)
 
         return zyx_losses, norm_loss
 

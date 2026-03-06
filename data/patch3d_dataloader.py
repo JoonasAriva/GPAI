@@ -291,8 +291,9 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
 
             coordinates = sphere_options[idxs]
 
-            offsets = np.random.uniform(np.array([0, -64, -64]),
-                                        np.array([0, 64, 64]),
+            variation = 96  # was 64 before focus compass experiments
+            offsets = np.random.uniform(np.array([0, -variation, -variation]),
+                                        np.array([0, variation, variation]),
                                         size=np.array([self.nr_of_patches * 8, 3])).astype(int)
 
             coordinates = coordinates + offsets
@@ -458,13 +459,15 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
 
         patch_centers, patch_size = self.sample_patch_coordinates(x, sphere_options=options,
                                                                   tumor_options=tumor_options)
-        kidney_mask = kidney_mask.unsqueeze(0)
+        if self.process_masks:
+            kidney_mask = kidney_mask.unsqueeze(0)
 
-        combined = torch.cat([x, kidney_mask], dim=0)
-
-        combined_patches = extract_patches_3d(combined, patch_centers, patch_size)
-        patches = combined_patches[:, :-1]
-        mask_patches = combined_patches[:, -1:]
+            combined = torch.cat([x, kidney_mask], dim=0)
+            combined_patches = extract_patches_3d(combined, patch_centers, patch_size)
+            patches = combined_patches[:, :-1]
+            mask_patches = combined_patches[:, -1:]
+        else:
+            patches = extract_patches_3d(x, patch_centers, patch_size)
 
         t6 = time.time()
         if self.kind == "2D":
@@ -472,73 +475,61 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
             threshold_dims = (1, 2, 3)
         else:
             threshold_dims = (1, 2, 3, 4)
-        num_patches = patches.shape[0]
-        indices = torch.arange(num_patches)
 
         keep_mask = (patches > 0.05).float().mean(dim=threshold_dims) > self.foreground_threshold
         patches = patches[keep_mask]
-        mask_patches = torch.squeeze(mask_patches[keep_mask][:, 0])
-
-        patch_class = ((2.5 > mask_patches) & (mask_patches > 1.5)).sum(axis=(1, 2))
-        patch_class = patch_class > 0
-        patch_class_cyst = (2.5 < mask_patches).sum(axis=(1, 2))
-        patch_class_cyst = patch_class_cyst > 0
-        if patch_class_cyst.any():
-            y_cyst = torch.Tensor([True])
-        else:
-            y_cyst = torch.Tensor([False])
-        # try:
         patch_centers = patch_centers[keep_mask]
-        # except:
-        #    print("patch centers", patch_centers.shape)
 
-        # take max 120 patches (GPU memory limitations)
-
-        # patches = patches[:120]
-        # patch_class = patch_class[:120]
         if self.augmentations is not None:
             x = self.augmentations(x)
 
         patch_centers = torch.Tensor(patch_centers)
-        t7 = time.time()
-        # print(
-        #     f"load scan: {t1 - t0:.2f}, "
-        #     f"load segmentation: {t3 - t2:.2f}, "
-        #     f"process: {t5 - t4:.2f}"
-        #     f"extract patches from volumes: {t6 - t5:.2f}, "
-        #     f"apply augmentations: {t7 - t6:.2f}, "
-        #     f"p1: {t41 - t4:.3f}, "
-        #     f"p2: {t42 - t41:.3f}, "
-        #     f"p3: {t5 - t42:.3f}, "
-        # )
-        return {
+
+        data_dict = {
             "patches": patches,  # torch.Tensor [n_patches, C, H, W]
             "label": y,
-            "cyst_label": y_cyst,
-            "patch_class": patch_class,  # [n_patches]
-            "patch_class_cyst": patch_class_cyst,
+
             "patch_centers": patch_centers,
             "original": x,  # full slice / original image if you need it
-            "path": path,  # str or Path
-            "mask_patches": mask_patches,  # if used downstream
-        }
-        #return patches, y, y_cyst, patch_class, patch_class_cyst, patch_centers, x, path, mask_patches
+            "path": path}  # str or Path
+
+        if self.process_masks:
+            mask_patches = torch.squeeze(mask_patches[keep_mask][:, 0])
+
+            patch_class = ((2.5 > mask_patches) & (mask_patches > 1.5)).sum(axis=(1, 2))
+            patch_class = patch_class > 0
+            patch_class_cyst = (2.5 < mask_patches).sum(axis=(1, 2))
+            patch_class_cyst = patch_class_cyst > 0
+            if patch_class_cyst.any():
+                y_cyst = torch.Tensor([True])
+            else:
+                y_cyst = torch.Tensor([False])
+
+            mask_dict = {"cyst_label": y_cyst,
+                         "patch_class": patch_class,  # [n_patches]
+                         "patch_class_cyst": patch_class_cyst,
+                         "mask_patches": mask_patches}  # if used downstream
+            data_dict.update(mask_dict)
+
+        return data_dict
+
+        # return patches, y, y_cyst, patch_class, patch_class_cyst, patch_centers, x, path, mask_patches
         # TODO: make it as dictionary?
         # return patches, y, (
         # case_id, new_spacings, path, x, patch_class, num_patches), patch_centers
 
-### FOR CIRCLES EXP
-# if rng.random() < 0.5:
-#
-#     y = torch.Tensor([True])
-#
-#     kidney_mask[kidney_mask > 0] = 1
-#     possible_locs = np.where(kidney_mask == 1)
-#     options = list(zip(*possible_locs))
-#     random_idx = rng.integers(len(options))
-#     coords = options[random_idx]
-#     x = add_sphere(x, coords, rng,simplified=False)
-# else:
-#     y = torch.Tensor([False])
-# gaussian_noise = torch.FloatTensor(np.random.rand(*x.shape) * 20)
-# x = np.array(gaussian_noise)
+        ### FOR CIRCLES EXP
+        # if rng.random() < 0.5:
+        #
+        #     y = torch.Tensor([True])
+        #
+        #     kidney_mask[kidney_mask > 0] = 1
+        #     possible_locs = np.where(kidney_mask == 1)
+        #     options = list(zip(*possible_locs))
+        #     random_idx = rng.integers(len(options))
+        #     coords = options[random_idx]
+        #     x = add_sphere(x, coords, rng,simplified=False)
+        # else:
+        #     y = torch.Tensor([False])
+        # gaussian_noise = torch.FloatTensor(np.random.rand(*x.shape) * 20)
+        # x = np.array(gaussian_noise)

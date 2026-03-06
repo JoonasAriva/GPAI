@@ -81,6 +81,8 @@ def main(cfg: DictConfig):
         proj_name = "swin_compass"
     if cfg.data.dataloader == 'kidney_pasted':
         proj_name = "MIL_encoder_24"
+    if cfg.model.name == "focuscompass" or cfg.model.name == "focuscompassfixed":
+        proj_name = "COMPASS"
 
     log_multi_gpu('Init Model', local_rank)
     model = pick_model(cfg)
@@ -91,10 +93,11 @@ def main(cfg: DictConfig):
         #     '/users/arivajoo/results/depth/train/resnetdepth/kidney_real/2025-07-14/11-17-49/checkpoints/best_model.pth',
         #     map_location='cuda:0')
         if cfg.model.model_type == '2D':
-
-            pth = '/users/arivajoo/results/patches2D_depth/train/depth_patches2D/kidney_real/2025-09-17/14-50-05/checkpoints/best_model.pth'  # resnet34?
-            # pth = '/users/arivajoo/results/patches2D_depth/train/depth_patches2D/kidney_real/2025-11-14/11-18-30/checkpoints/best_model.pth'  # resnet50
-            sd = torch.load(pth, map_location='cuda:0', weights_only=True)  # this resnet50
+            pth = '/users/arivajoo/results/patches2D_depth/train/depth_patches2D/kidney_real/'
+            resnet_pth = '2026-02-28/11-59-22/checkpoints/best_model.pth'  # resnet18
+            # resnet_pth = '2025-09-17/14-50-05/checkpoints/best_model.pth'  # resnet34?
+            # resnet_pth = '2025-11-14/11-18-30/checkpoints/best_model.pth'  # resnet50
+            sd = torch.load(pth + resnet_pth, map_location='cuda:0', weights_only=True)  # this resnet50
 
         elif cfg.model.model_type == '3D':
             sd = torch.load(
@@ -130,7 +133,7 @@ def main(cfg: DictConfig):
         model = DDP(  # <- We need to wrap the model with DDP
             model,
             device_ids=[local_rank],  # <- and specify the device_ids/output_device
-            find_unused_parameters=False  # was True before
+            find_unused_parameters=True  # was True before
         )
     else:
         if torch.cuda.is_available():

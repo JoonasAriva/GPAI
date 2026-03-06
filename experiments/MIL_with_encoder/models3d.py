@@ -2,10 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from monai.networks.nets import resnet
+from torchvision.models import resnet18, ResNet18_Weights, resnet34, ResNet34_Weights, resnet, resnet50
 
-from torchvision.models import resnet18, ResNet18_Weights, resnet34, ResNet34_Weights, resnet, resnet50, \
-    ResNet50_Weights
-#from monai.networks.nets import resnet18, resnet34, resnet50
+# from monai.networks.nets import resnet18, resnet34, resnet50
 from gradient_reversal import GradientReversal
 from model_zoo import MyGroupNorm, AttentionHeadV3
 
@@ -143,20 +142,19 @@ class ResNetDepth2dPatches(nn.Module):
     def __init__(self):
         super().__init__()
 
-
-        self.model = resnet.ResNet(resnet.Bottleneck, [2,2,2,2], norm_layer=MyGroupNorm)
+        self.backbone = resnet.ResNet(resnet.BasicBlock, [2, 2, 2, 2], norm_layer=MyGroupNorm)
         sd = resnet18(weights=ResNet18_Weights.DEFAULT).state_dict()
-        self.model.load_state_dict(sd, strict=False)
+        self.backbone.load_state_dict(sd, strict=False)
         print("using resnet18!")
-        num_features = self.model.fc.in_features
+        num_features = self.backbone.fc.in_features
 
-        self.cls_head = nn.Linear(num_features, 3)
-        self.model.fc = nn.Identity()  # now forward pass outputs feature vectors
+        self.compass_head = nn.Linear(num_features, 3)
+        self.backbone.fc = nn.Identity()  # now forward pass outputs feature vectors
 
     def forward(self, x):
-        feats = self.model(x)
+        feats = self.backbone(x)
         # attn_output, attn_weights = self.transformer(feats)
-        preds = self.cls_head(feats)
+        preds = self.compass_head(feats)
         return preds
 
 
