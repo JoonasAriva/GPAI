@@ -9,6 +9,7 @@ import torch.optim as optim
 import torch.utils.data as data_utils
 import torchio as tio
 from omegaconf import DictConfig
+from torch import nn
 from torch.utils.data.distributed import DistributedSampler
 
 from DANN import DANN
@@ -19,9 +20,10 @@ from data.DistriputedDataCustomSampler import DistributedSamplerWrapper
 from data.kidney_dataloader import KidneyDataloader, AbdomenAtlasLoader
 from data.patch3d_dataloader import KidneyDataloader3D
 # from data.synth_dataloaders import SynthDataloader
-from depth_trainer import TrainerDepth, DepthLossV2, CompassLoss
+from depth_trainer import TrainerDepth, CompassLoss, DepthLossV4
 from depth_trainer2Dpatches import Trainer2DPatchDepth, DepthLossSamplePatches
 from depth_trainer3D import Trainer3DDepth, DepthLoss3D
+from dynamic_network_architectures.architectures.unet import PlainConvUNetCOMPASS
 from focusMIL import FocusMIL, FocusCompass, FocusCompassFixed
 from focusMIL_trainer import FocusTrainer
 from focuscontrast_trainer import FocusContrastTrainer
@@ -81,7 +83,6 @@ def var_collate_fn(batch):  # batch = list[dict]
     ])
 
     labels = torch.stack(batched["label"])
-
 
     paths = batched["path"]
 
@@ -205,13 +206,22 @@ def prepare_dataloader(cfg: DictConfig):
             sampler_test = DistributedSampler(test_dataset, num_replicas=int(torch.cuda.device_count()),
                                               rank=int(os.environ["LOCAL_RANK"]),
                                               shuffle=True)
+        collate_fn = None
+        if cfg.data.patchify:
+            collate_fn = var_collate_fn
+        else:
+            if cfg.data.batch_size == 1:
+                collate_fn = None
+            else:
+                collate_fn = var_collate_fn_slices
+
         train_loader = data_utils.DataLoader(train_dataset,
-                                             collate_fn=var_collate_fn if cfg.data.patchify else var_collate_fn_slices,
+                                             collate_fn=collate_fn,
                                              batch_size=cfg.data.batch_size,
                                              sampler=sampler,
                                              **loader_kwargs)
         test_loader = data_utils.DataLoader(test_dataset,
-                                            collate_fn=var_collate_fn if cfg.data.patchify else var_collate_fn_slices,
+                                            collate_fn=collate_fn,
                                             batch_size=cfg.data.batch_size,
                                             shuffle=False,
                                             sampler=sampler_test if cfg.training.multi_gpu == True else None,
@@ -320,12 +330,29 @@ def pick_model(cfg: DictConfig):
         model = FocusCompass()
     elif cfg.model.name == 'focuscompassfixed':
         model = FocusCompassFixed()
+    elif cfg.model.name == 'unetcompass':
+        model = PlainConvUNetCOMPASS(
+            input_channels=1,
+            n_stages=6,
+            features_per_stage=(32, 64, 128, 256, 320, 320),
+            conv_op=nn.Conv3d,
+            kernel_sizes=3,
+            strides=(1, 2, 2, 2, 2, 2),
+            n_conv_per_stage=2,
+            conv_bias=True,
+            norm_op=nn.InstanceNorm3d,
+            norm_op_kwargs={"eps": 1e-5, "affine": True},
+            nonlin=nn.LeakyReLU,
+            nonlin_kwargs={"inplace": True},
+        )
+        model.initialize(model)
+
     return model
 
 
 def pick_trainer(cfg, optimizer, scheduler, steps_in_epoch, adv_optimizer=None, warmup_steps=0):
     if cfg.experiment == "depth":
-        loss_function = DepthLossV2(step=0.05).cuda()  # was 0.01 # then 0.1, but it might be too sparse
+        loss_function = DepthLossV4().cuda()  # was 0.01 # then 0.1, but it might be too sparse
         trainer = TrainerDepth(optimizer=optimizer, scheduler=scheduler, loss_function=loss_function,
                                cfg=cfg,
                                steps_in_epoch=steps_in_epoch)
@@ -430,7 +457,7 @@ def prepare_optimizer(cfg, model):
                 no_decay = False
 
             # Classify as backbone or new
-            if name.startswith("model."):  # adjust prefix if needed
+            if name.startswith("backbone."):  # adjust prefix if needed
                 if no_decay:
                     backbone_no_decay.append(p)
                 else:
@@ -444,12 +471,12 @@ def prepare_optimizer(cfg, model):
         # Optimizer with separate LR and proper weight decay
         optimizer = optim.AdamW([
             # Backbone (usually pretrained)
-            {'params': backbone_decay, 'lr': 5e-5, 'weight_decay': cfg.training.weight_decay},
-            {'params': backbone_no_decay, 'lr': 5e-5, 'weight_decay': 0.0},
+            {'params': backbone_decay, 'lr': 1e-4, 'weight_decay': cfg.training.weight_decay},
+            {'params': backbone_no_decay, 'lr': 1e-4, 'weight_decay': 0.0},
 
             # New / task-specific layers
-            {'params': new_decay, 'lr': 1e-4, 'weight_decay': cfg.training.weight_decay},
-            {'params': new_no_decay, 'lr': 1e-4, 'weight_decay': 0.0},
+            {'params': new_decay, 'lr': 1e-3, 'weight_decay': cfg.training.weight_decay},
+            {'params': new_no_decay, 'lr': 1e-3, 'weight_decay': 0.0},
         ], betas=(0.9, 0.999), eps=1e-8)
 
     return optimizer

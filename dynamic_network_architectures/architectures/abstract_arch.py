@@ -1,8 +1,6 @@
-from copy import deepcopy
-from typing import Literal, Sequence
+from typing import Sequence
+
 from torch import nn
-import torch
-from dataclasses import dataclass
 
 
 class AbstractDynamicNetworkArchitectures(nn.Module):

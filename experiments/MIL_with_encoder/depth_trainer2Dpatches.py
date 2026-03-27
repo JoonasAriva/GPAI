@@ -99,13 +99,13 @@ class DepthLossSamplePatches(nn.Module):
         unique_patients_nr = 1
 
         if patient_ids is not None:
-
             patient_mask = patient_ids.unsqueeze(1) == patient_ids.unsqueeze(0)
             # get mask where patches are from the same patient
             unique_patients_nr = len(np.unique(patient_ids))
 
         # scale real coordinates with respectable spacing values (in millimeters)
-        voxel_spacing = torch.tensor([2.0, 0.84, 0.84])
+        # voxel_spacing = torch.tensor([2.0, 0.84, 0.84])
+        voxel_spacing = torch.tensor([1.6, 0.68, 0.68])
         scaled_coordinates = real_coordinates * voxel_spacing
 
         # calculate the manhattan distances for predictions and real coordinates
@@ -162,7 +162,7 @@ class Trainer2DPatchDepth:
         self.important_slices_only = cfg.data.important_slices_only
         self.update_freq = cfg.training.weight_update_freq
         self.slice_level_supervision = cfg.data.slice_level_supervision
-        self.scaler = torch.cuda.amp.GradScaler()
+        self.scaler = torch.amp.GradScaler("cuda")
         self.model_type = cfg.model.model_type
         self.attention_exp = attention_exp
         if cfg.data.no_lungs:
@@ -229,44 +229,46 @@ class Trainer2DPatchDepth:
 
             data = torch.squeeze(data_dict["bag"], dim=0)
 
+            data = data.to(self.device, dtype=torch.bfloat16, non_blocking=True)
+
             if self.check:
                 print("data shape: ", data.shape, flush=True)
 
-                print("patches_cpu dtype:", data.dtype)
-                print("patches_cpu shape:", data.shape)
-                print("patches_cpu is_contiguous:", data.is_contiguous())
-                print("patches_cpu requires_grad:", data.requires_grad)
-
-            data = data.to(self.device, dtype=torch.float16, non_blocking=True)
-
             time_forward = time.time()
             grad_ctx = torch.no_grad() if not train else nullcontext()
-            with torch.cuda.amp.autocast(), grad_ctx:
+            # with torch.cuda.amp.autocast(), grad_ctx:
+            with torch.cuda.amp.autocast(dtype=torch.bfloat16), grad_ctx:
+                # print("start for forward pass", flush=True)
                 features = model.forward(data)
-
+                # print("end for forward pass", flush=True)
                 forward_time = time.time() - time_forward
                 forward_times.append(forward_time)
 
                 time_loss = time.time()
-
+                # print("patch centers: ", data_dict["patch_centers"], flush=True)
                 (dloss, hloss, wloss), norm_loss = self.loss_function(features, data_dict["patch_centers"])
+                # print("loss calculated")
 
                 loss_time = time.time() - time_loss
                 loss_times.append(loss_time)
                 depth_loss = (dloss + hloss + wloss + norm_loss) / self.update_freq
 
-            if train:
-                time_backprop = time.time()
-                self.scaler.scale(depth_loss).backward()
-                backprop_time = time.time() - time_backprop
-                backprop_times.append(backprop_time)
-                if (step) % self.update_freq == 0 or (step) == len(data_loader):
+                if train:
+                    time_backprop = time.time()
+                    # print("start for backprop pass", flush=True)
+                    depth_loss.backward()
+                    # self.scaler.scale(depth_loss).backward()
+                    backprop_time = time.time() - time_backprop
+                    backprop_times.append(backprop_time)
+                    if (step) % self.update_freq == 0 or (step) == len(data_loader):
 
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                    if self.scheduler:
-                        self.scheduler.step()
-                    self.optimizer.zero_grad(set_to_none=True)
+                        self.optimizer.step()
+
+                        # self.scaler.step(self.optimizer)
+                        # self.scaler.update()
+                        if self.scheduler:
+                            self.scheduler.step()
+                        self.optimizer.zero_grad(set_to_none=True)
 
             epoch_loss += depth_loss.item()
 

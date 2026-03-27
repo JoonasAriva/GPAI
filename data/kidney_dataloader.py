@@ -79,16 +79,23 @@ class KidneyDataloader(torch.utils.data.Dataset):
 
         self.classes = ["control", "tumor"]
 
-        self.center_cropper = CenterSpatialCrop(roi_size=(512, 512, center_crop))
+        self.xy_size = 500
+        self.center_cropper = CenterSpatialCrop(roi_size=(self.xy_size, self.xy_size, center_crop))
+        self.padder_z = SpatialPad(spatial_size=(center_crop, -1, -1), method="end", constant_values=0)
+        #self.padder_xy = SpatialPad(spatial_size=(-1, self.xy_size, self.xy_size), method="symmetric",
+        #                            constant_values=0)
         self.air_cropper = CropForeground(select_fn=threshold_f, margin=0, allow_smaller=False)
         self.exact_path = None
 
     def pick_sample_frequency(self, nr_of_original_slices: int, nth_slice: int):
 
+        if nr_of_original_slices <= 300:
+            return 1
+
         if nth_slice == 1:
             return nth_slice
 
-        if nr_of_original_slices / nth_slice < 50:
+        if nr_of_original_slices / nth_slice < 100:
             return self.pick_sample_frequency(nr_of_original_slices, nth_slice - 1)
         else:
             return nth_slice
@@ -107,45 +114,29 @@ class KidneyDataloader(torch.utils.data.Dataset):
         case_id = match.replace("_0000.nii", ".nii")
         y = torch.Tensor(self.labels[index])
         x = nib.load(path)
-        t1 = time.time()
+
         x = set_orientation_nib(x)
         spacings = x.header.get_zooms()  # [2]-for only z, currently changed to take all spacings | h,w,d (order ?)
         x = torch.from_numpy(x.get_fdata().copy())
-        new_spacings = (0.84, 0.84, 2)
-        x = resize_array(x, spacings, new_spacings)
+
+        #new_spacings = (2, 2, 2)
+        #x = resize_array(x, spacings, new_spacings)
+
         if self.process_masks:
             seg_path = path.replace("_0000.nii.gz", ".nii.gz", ).replace("images", "labels")
-            t2 = time.time()
+
             kidney_mask = set_orientation_nib(nib.load(seg_path))
             kidney_mask = np.asanyarray(kidney_mask.dataobj, dtype=np.uint8)
             kidney_mask = torch.from_numpy(kidney_mask.copy())
-            t3 = time.time()
-            kidney_mask = resize_array(kidney_mask, spacings, new_spacings, mask=True)
 
-        t4 = time.time()
+            #kidney_mask = resize_array(kidney_mask, spacings, new_spacings, mask=True)
+
         x = torch.clamp(x, min=-1024)
-        preproc_path = f"/scratch/project_465001979/ct_data/kidney/preprocess_files/{case_id}_preproc.npz"
-        pre_proc = np.load(preproc_path)
-        mask = torch.as_tensor(pre_proc["mask"], dtype=torch.bool)
-        try:
-            x[~mask] = -1024
-        except IndexError:
-            print("preproc path:", preproc_path)
-            print("mask:", mask.shape)
-            print("x: ", x.shape)
-            print("case id: ", case_id)
-
-        t41 = time.time()
-
-        #x = self.air_cropper.crop_pad(x, pre_proc["bbox"][0], pre_proc["bbox"][1]).as_tensor()
-
-        # if self.process_masks:
-        #     kidney_mask = self.air_cropper.crop_pad(kidney_mask, pre_proc["bbox"][0], pre_proc["bbox"][1])
-
-        t42 = time.time()
 
         nr_of_original_slices = x.shape[-1]
+
         nth_slice = self.pick_sample_frequency(nr_of_original_slices, self.nth_slice)
+
         x = x[:, :, ::nth_slice]  # sample slices
         kidney_mask = kidney_mask[:, :, ::nth_slice]
         x = torch.unsqueeze(x, 0)  # needed for cropper
@@ -176,13 +167,19 @@ class KidneyDataloader(torch.utils.data.Dataset):
 
         x = normalize_scan_new(x)
 
-        slice_class = ((2.5 > kidney_mask) & (kidney_mask > 1.5)).sum(axis=(0,1))
+        slice_class = ((2.5 > kidney_mask) & (kidney_mask > 1.5)).sum(axis=(0, 1))
         slice_class = slice_class > 0
 
         if self.augmentations is not None:
             x = self.augmentations(x)
 
-        return x, y, slice_class, path
+        height_before_padding = x.shape[0]
+        x = x.permute(1, 0, 2, 3)
+        #x = self.padder_xy(x)
+        x = self.padder_z(x).as_tensor()
+        x = x.permute(1, 0, 2, 3)
+
+        return x, y, slice_class, nth_slice, spacings, height_before_padding
 
 
 # class KidneyDataloader(torch.utils.data.Dataset):

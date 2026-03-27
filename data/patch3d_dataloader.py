@@ -291,7 +291,7 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
 
             coordinates = sphere_options[idxs]
 
-            variation = 96  # was 64 before focus compass experiments
+            variation = 110  # was 64 before focus compass experiments
             offsets = np.random.uniform(np.array([0, -variation, -variation]),
                                         np.array([0, variation, variation]),
                                         size=np.array([self.nr_of_patches * 8, 3])).astype(int)
@@ -380,7 +380,8 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
         x = set_orientation_nib(x)
         spacings = x.header.get_zooms()  # [2]-for only z, currently changed to take all spacings | h,w,d (order ?)
         x = torch.from_numpy(x.get_fdata().copy())
-        new_spacings = (0.84, 0.84, 2)
+        # new_spacings = (0.84, 0.84, 2)
+        new_spacings = (0.68, 0.68, 1.6)
         x = resize_array(x, spacings, new_spacings)
         if self.process_masks:
             # seed = hash(path) % (2 ** 32)
@@ -395,26 +396,28 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
 
         t4 = time.time()
         x = torch.clamp(x, min=-1024)
-        preproc_path = f"/scratch/project_465001979/ct_data/kidney/preprocess_files/{case_id}_preproc.npz"
-        pre_proc = np.load(preproc_path)
-        mask = torch.as_tensor(pre_proc["mask"], dtype=torch.bool)
-        try:
-            x[~mask] = -1024
-        except IndexError:
-            print("preproc path:", preproc_path)
-            print("mask:", mask.shape)
-            print("x: ", x.shape)
-            print("case id: ", case_id)
+        #preproc_path = f"/scratch/project_465001979/ct_data/kidney/preprocess_files/{case_id}_preproc.npz"
+        #pre_proc = np.load(preproc_path)
+        #mask = torch.as_tensor(pre_proc["mask"], dtype=torch.bool)
+        # try:
+        #     x[~mask] = -1024
+        # except IndexError:
+        #     print("preproc path:", preproc_path)
+        #     print("mask:", mask.shape)
+        #     print("x: ", x.shape)
+        #     print("case id: ", case_id)
         # x = remove_table_3d(x)
         t41 = time.time()
-        # box_start_, box_end_ = self.air_cropper.compute_bounding_box(x)
-        x = self.air_cropper.crop_pad(x, pre_proc["bbox"][0], pre_proc["bbox"][1]).as_tensor()
 
-        if self.process_masks:
-            kidney_mask = self.air_cropper.crop_pad(kidney_mask, pre_proc["bbox"][0], pre_proc["bbox"][1])
-            kidney_mask = kidney_mask.permute(2, 0, 1)
-            if self.kind == "2D":
-                kidney_mask = kidney_mask[1:-1, :, :]
+        ## box_start_, box_end_ = self.air_cropper.compute_bounding_box(x)
+        ##x = self.air_cropper.crop_pad(x, pre_proc["bbox"][0], pre_proc["bbox"][1]).as_tensor()
+        x = self.air_cropper(x).as_tensor()
+
+        # if self.process_masks:
+        #     kidney_mask = self.air_cropper.crop_pad(kidney_mask, pre_proc["bbox"][0], pre_proc["bbox"][1])
+        #     kidney_mask = kidney_mask.permute(2, 0, 1)
+        #     if self.kind == "2D":
+        #         kidney_mask = kidney_mask[1:-1, :, :]
         t42 = time.time()
         if self.kind == "2D":
             # x shape: (H, W, D)
@@ -512,24 +515,3 @@ class KidneyDataloader3D(torch.utils.data.Dataset):
             data_dict.update(mask_dict)
 
         return data_dict
-
-        # return patches, y, y_cyst, patch_class, patch_class_cyst, patch_centers, x, path, mask_patches
-        # TODO: make it as dictionary?
-        # return patches, y, (
-        # case_id, new_spacings, path, x, patch_class, num_patches), patch_centers
-
-        ### FOR CIRCLES EXP
-        # if rng.random() < 0.5:
-        #
-        #     y = torch.Tensor([True])
-        #
-        #     kidney_mask[kidney_mask > 0] = 1
-        #     possible_locs = np.where(kidney_mask == 1)
-        #     options = list(zip(*possible_locs))
-        #     random_idx = rng.integers(len(options))
-        #     coords = options[random_idx]
-        #     x = add_sphere(x, coords, rng,simplified=False)
-        # else:
-        #     y = torch.Tensor([False])
-        # gaussian_noise = torch.FloatTensor(np.random.rand(*x.shape) * 20)
-        # x = np.array(gaussian_noise)

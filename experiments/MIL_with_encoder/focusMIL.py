@@ -27,6 +27,7 @@ class VariationalEncoder(nn.Module):
         hidden = self.fc_initial(x)
         mu = self.mean(hidden)
         logvar = self.logvar(hidden)
+
         return mu, logvar
 
 
@@ -125,17 +126,17 @@ class FocusMIL(nn.Module):
                 - 2 * torch.log(instance_std + 1e-8) - 1
         ).mean()
         Y_hat = torch.ge(torch.sigmoid(bag_score), 0.5).float()
-        if self.cysts:
-            cyst_Y_hat = torch.ge(torch.sigmoid(cyst_bag_score), 0.5).float()
-        else:
-            cyst_Y_hat = None
+        #if self.cysts:
+        #    cyst_Y_hat = torch.ge(torch.sigmoid(cyst_bag_score), 0.5).float()
+        #else:
+        #    cyst_Y_hat = None
         return {
             'scores': bag_score,
             'instance_scores': instance_scores,
             'KL_loss': KL_loss,
             'predictions': Y_hat,
-            'cyst_scores': cyst_bag_score,
-            'cyst_Y_hat': cyst_Y_hat,
+            #'cyst_scores': cyst_bag_score,
+            #'cyst_Y_hat': cyst_Y_hat,
         }
 
 
@@ -216,11 +217,9 @@ class FocusCompassFixed(FocusMIL):
 
         self.projection_head = nn.Linear(self.num_features, 128)
 
-
     @torch.no_grad()
     def pred_compass(self, bag):
         return self.fixed_compass_model(bag)
-
 
     def forward(self, bag, bag_idx, training: bool = True, **kwargs):
         feats = self.backbone(bag)
@@ -298,9 +297,9 @@ class ContastiveLoss(nn.Module):
 
         # position scores
         euclidian_dists = self.calc_euclidian_distances_in_3d(compass_scores)
-        #print("euclidian_dists", euclidian_dists)
+        # print("euclidian_dists", euclidian_dists)
         compass_positional_mask = euclidian_dists < self.compass_proximity_threshold
-        #print("compass_positional_mask", compass_positional_mask)
+        # print("compass_positional_mask", compass_positional_mask)
         # classes & instance scores
         labels_per_instance = bag_labels[bag_idxs].cuda()
         # take all instances from negative bags and also negative instances from positive bags
@@ -322,7 +321,7 @@ class ContastiveLoss(nn.Module):
 
     def forward(self, feature_vectors, bag_idxs, bag_labels, compass_scores, instance_scores):
         mask = self.calc_positive_instance_pair_mask(compass_scores, bag_idxs, bag_labels, instance_scores)
-        #print("mask", mask)
+        # print("mask", mask)
         logits = self.cosine_sim(feature_vectors.unsqueeze(1), feature_vectors.unsqueeze(0))
 
         exp_logits = torch.exp(logits)

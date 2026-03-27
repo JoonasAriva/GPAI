@@ -212,8 +212,8 @@ def normalize_scan_new(x):
     # x is expected to be a torch.Tensor
     clipped_x = torch.clamp(x, min=-150, max=250)  # soft tissue window
 
-    min_val = torch.min(clipped_x)
-    max_val = torch.max(clipped_x)
+    min_val = -150
+    max_val = 250
 
     norm_x = (clipped_x - min_val) / (max_val - min_val + 1e-8)  # avoid division by zero
 

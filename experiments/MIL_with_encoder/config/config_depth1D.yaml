@@ -2,7 +2,7 @@ hydra:
   run:
     dir: results/${experiment}/${hydra.job.name}/${model.name}/${data.dataloader}/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
-experiment: MIL
+experiment: depth
 
 training:
   epochs: 90
@@ -10,43 +10,43 @@ training:
   weight_decay: 5e-4
   weight_update_freq: 1
   seed: 2
-  multi_gpu: True
+  multi_gpu: False
 
 model:
   classes: 1
-  name: 'focus'
+  name: 'resnetdepth'
   model_type: '2D'
   pretrained_imagenet: True
   neighbour_range: 0
   num_heads: 1
   inst_norm: True
   ghostnorm: False
-  pretrained: True
-  depth: False
-  classification: True
+  pretrained: False
+  depth: True
+  classification: False
   frozen_backbone: False
   dann: False
   cysts: False
 
 data:
-  batch_size: 5
+  batch_size: 1
   take_every_nth_slice: 3
   data_augmentations: True
   plane: axial
   dataloader: kidney_real
-  crop_size: 300
+  crop_size: 200
   as_rgb: True
   roll_slices: True
   TUH_only: False
-  TUH_extra_data: True
+  TUH_extra_data: False
   compass_filter: False
   important_slices_only: False
   no_lungs: False
-  patchify: True
+  patchify: False
   nr_of_patches: 96
   slice_level_supervision: 0
   random_experiment: False
-  spheres: True
+  spheres: False
   sample: uniform
 
 #checkpoint: /users/arivajoo/results/COMPASS/train/focuscompassfixed/kidney_real/2026-03-05/15-58-14/checkpoints/

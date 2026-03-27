@@ -33,10 +33,10 @@ np.seterr(divide='ignore', invalid='ignore')
 
 os.environ["WANDB__SERVICE_WAIT"] = "300"
 
-torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.benchmark = False
 
 
-@hydra.main(config_path="config", config_name="config_MIL", version_base='1.1')
+@hydra.main(config_path="config", config_name="config_depth1D", version_base='1.1')
 def main(cfg: DictConfig):
     if cfg.training.multi_gpu:
         init_process_group(backend="nccl", timeout=timedelta(seconds=3600))
@@ -62,7 +62,7 @@ def main(cfg: DictConfig):
     train_loader, test_loader = prepare_dataloader(cfg)
 
     # steps_in_epoch = 480  # with pärnu and kirc and kits its 1250, if just TUH, its 480
-    steps_in_epoch = 577 * 2  # with extra data
+    steps_in_epoch = 480  # with extra data it is 577*2
     steps_in_epoch = (steps_in_epoch // n_gpus) // cfg.data.batch_size
     if cfg.data.dataloader == 'kidney_pasted':
         steps_in_epoch = 478 // n_gpus
@@ -133,7 +133,7 @@ def main(cfg: DictConfig):
         model = DDP(  # <- We need to wrap the model with DDP
             model,
             device_ids=[local_rank],  # <- and specify the device_ids/output_device
-            find_unused_parameters=True  # was True before
+            find_unused_parameters=False  # was True before
         )
     else:
         if torch.cuda.is_available():
@@ -191,9 +191,13 @@ def main(cfg: DictConfig):
     for epoch in range(1, cfg.training.epochs + 1):
         epoch_results = dict()
         train_results = trainer.run_one_epoch(model, train_loader, epoch, train=True, local_rank=local_rank)
-        epoch_results["learning_rate"] = scheduler.get_last_lr()[0]
 
-        test_results = trainer.run_one_epoch(model, test_loader, epoch, train=False, local_rank=local_rank)
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()  # wait until finished
+        print_multi_gpu("going to eval after epoch {}".format(epoch), local_rank)
+        epoch_results["learning_rate"] = scheduler.get_last_lr()[0]
+        with torch.no_grad():
+            test_results = trainer.run_one_epoch(model, test_loader, epoch, train=False, local_rank=local_rank)
 
         train_results = {k + '_train': v for k, v in train_results.items()}
         test_results = {k + '_test': v for k, v in test_results.items()}
